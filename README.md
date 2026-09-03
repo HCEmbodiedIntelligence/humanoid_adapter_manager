@@ -1,0 +1,1 @@
+# humanoid_adapter_manager
