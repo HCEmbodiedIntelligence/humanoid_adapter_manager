@@ -124,6 +124,105 @@ def validate_recording(value):
             raise DeploymentError(f"{topic}: 无效输出方式")
 
 
+def validate_cameras(value):
+    """Validate robot-owned camera definitions without touching camera hardware."""
+    if not isinstance(value, list) or len(value) > 16:
+        raise DeploymentError("相机配置必须是列表，且最多 16 台")
+    result, identifiers, endpoints, serials = [], set(), set(), set()
+    ros_name = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+    ros_topic = re.compile(r"/(?:[A-Za-z_][A-Za-z0-9_]*)(?:/[A-Za-z_][A-Za-z0-9_]*)*")
+    for raw in value:
+        if not isinstance(raw, dict):
+            raise DeploymentError("每台相机配置必须是对象")
+        camera = copy.deepcopy(raw)
+        ident = camera.get("id", "")
+        if not isinstance(ident, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", ident):
+            raise DeploymentError("相机 ID 需以小写字母开头，只允许小写字母、数字和下划线")
+        if ident in identifiers:
+            raise DeploymentError(f"相机 ID 重复: {ident}")
+        identifiers.add(ident)
+        camera.setdefault("enabled", True)
+        camera.setdefault("backend", "realsense")
+        camera.setdefault("required", True)
+        camera.setdefault("pointcloud", False)
+        for key in ("enabled", "required", "pointcloud"):
+            if type(camera[key]) is not bool:
+                raise DeploymentError(f"{ident}.{key} 必须为布尔值")
+        if camera["backend"] not in {"realsense", "ros_topics"}:
+            raise DeploymentError(f"{ident}: backend 只支持 realsense 或 ros_topics")
+        if camera["backend"] == "ros_topics":
+            camera.setdefault("fps", 30)
+            if type(camera["fps"]) is not int or not 1 <= camera["fps"] <= 240:
+                raise DeploymentError(f"{ident}.fps 必须是 1–240 的整数")
+            camera.setdefault("rgbd_topic", f"/{ident}/normalized/rgbd")
+            camera.setdefault("metadata_topic", f"/{ident}/normalized/metadata")
+            camera.setdefault("pointcloud_topic", f"/{ident}/normalized/points")
+            camera.setdefault("pointcloud_metadata_topic", f"/{ident}/normalized/points_metadata")
+            for key in ("rgbd_topic", "metadata_topic"):
+                if not isinstance(camera[key], str) or not ros_topic.fullmatch(camera[key]):
+                    raise DeploymentError(f"{ident}.{key} 必须是绝对 ROS 话题")
+            if camera["pointcloud"]:
+                for key in ("pointcloud_topic", "pointcloud_metadata_topic"):
+                    if not isinstance(camera[key], str) or not ros_topic.fullmatch(camera[key]):
+                        raise DeploymentError(f"{ident}.{key} 必须是绝对 ROS 话题")
+            result.append(camera)
+            continue
+        defaults = {
+            "device_type": "d405", "serial_no": "", "namespace": ident,
+            "camera_name": "camera", "width": 640, "height": 480, "fps": 30,
+            "color_format": "RGB8", "depth_format": "Z16", "align_depth": False,
+            "normalize_timestamps": True, "depth_auto_exposure": True,
+            "depth_exposure_us": 4500, "depth_gain": 64,
+            "depth_auto_exposure_limit_us": 4500, "depth_auto_gain_limit": 64,
+            "color_auto_exposure": False, "color_exposure_us": 4500,
+            "color_gain": 64, "parameters": {},
+        }
+        for key, default in defaults.items():
+            camera.setdefault(key, default)
+        for key in ("namespace", "camera_name"):
+            if not isinstance(camera[key], str) or not ros_name.fullmatch(camera[key]):
+                raise DeploymentError(f"{ident}.{key} 不是有效 ROS 名称")
+        endpoint = (camera["namespace"], camera["camera_name"])
+        if endpoint in endpoints:
+            raise DeploymentError(f"相机 ROS 命名空间与节点名重复: /{endpoint[0]}/{endpoint[1]}")
+        endpoints.add(endpoint)
+        if not isinstance(camera["device_type"], str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", camera["device_type"]):
+            raise DeploymentError(f"{ident}.device_type 无效")
+        if not isinstance(camera["serial_no"], str) or len(camera["serial_no"]) > 128 or any(c.isspace() for c in camera["serial_no"]):
+            raise DeploymentError(f"{ident}.serial_no 无效")
+        if camera["serial_no"]:
+            if camera["serial_no"] in serials:
+                raise DeploymentError(f"相机序列号重复: {camera['serial_no']}")
+            serials.add(camera["serial_no"])
+        for key in ("align_depth", "normalize_timestamps", "depth_auto_exposure", "color_auto_exposure"):
+            if type(camera[key]) is not bool:
+                raise DeploymentError(f"{ident}.{key} 必须为布尔值")
+        for key, low, high in (("width", 1, 8192), ("height", 1, 8192), ("fps", 1, 240),
+                               ("depth_exposure_us", 1, 5000), ("depth_gain", 0, 10000),
+                               ("depth_auto_exposure_limit_us", 1, 5000), ("depth_auto_gain_limit", 1, 10000),
+                               ("color_exposure_us", 1, 5000), ("color_gain", 0, 10000)):
+            number = camera[key]
+            if type(number) is not int or not low <= number <= high:
+                raise DeploymentError(f"{ident}.{key} 必须是 {low}–{high} 的整数")
+        for key in ("color_format", "depth_format"):
+            if not isinstance(camera[key], str) or not re.fullmatch(r"[A-Za-z0-9_]{1,32}", camera[key]):
+                raise DeploymentError(f"{ident}.{key} 无效")
+        if not isinstance(camera["parameters"], dict):
+            raise DeploymentError(f"{ident}.parameters 必须为对象")
+        validate_values(camera["parameters"], f"/cameras/{ident}/parameters")
+        result.append(camera)
+    active_realsense = [x for x in result if x["backend"] == "realsense" and x["enabled"]]
+    if len(active_realsense) > 1 and any(not x["serial_no"] for x in active_realsense):
+        raise DeploymentError("同时启用多台 RealSense 时，每台都必须填写唯一序列号")
+    return result
+
+
+def normalize_document(document):
+    value = copy.deepcopy(document)
+    value.setdefault("cameras", [])
+    return value
+
+
 class ConfigurationManager:
     def __init__(self, plugin_root, state_root):
         self.plugin_root = Path(plugin_root).resolve()
@@ -180,7 +279,7 @@ class ConfigurationManager:
         return [root / "hardware_drivers" / composition["plugins"]["hardware_driver"],
                 root / "robot_models" / composition["plugins"]["robot_model"], robot_path]
 
-    def _document(self, root, robot_id, recording=None):
+    def _document(self, root, robot_id, recording=None, cameras=None):
         driver, model, robot = self._components(root, robot_id)
         resources = {}
         for path in (driver, model):
@@ -188,7 +287,11 @@ class ConfigurationManager:
             for key, relative in manifest["resources"].items():
                 target = _resolve_member(path, relative, key)
                 resources[key] = target.read_text(encoding="utf-8") if key == "urdf" else _resource_document(target)
+        if cameras is None:
+            camera_path = robot / "cameras.yaml"
+            cameras = (_yaml(camera_path) or {}).get("cameras", []) if camera_path.is_file() else []
         return {"name": _yaml(robot / "manifest.yaml")["name"], "resources": resources,
+                "cameras": validate_cameras(cameras),
                 "recording": recording or {"directory": "../runtime/topic_recordings", "subscriptions": [
                     {"topic": "/hc_teleop/joint_states", "type": "sensor_msgs/msg/JointState", "enabled": True, "outputs": ["record", "websocket"], "max_hz": 0, "event_max_hz": 20},
                     {"topic": "/diagnostics", "type": "diagnostic_msgs/msg/DiagnosticArray", "enabled": True, "outputs": ["record", "websocket"], "max_hz": 0, "event_max_hz": 5},
@@ -214,12 +317,13 @@ class ConfigurationManager:
             workspace = self._workspace(robot_id)
             if workspace.exists():
                 raise ConfigurationConflict("配置 ID 已存在，请使用其他 ID")
-            source_root, recording = self.plugin_root, None
+            source_root, recording, cameras = self.plugin_root, None, None
             if source_workspace:
                 source = self._read(source_workspace)
                 source_root = self._revision(source_workspace, source["latest"]) / "root"
                 source_robot = source_workspace
-                recording = json.loads((source_root.parent / "document.json").read_text())["recording"]
+                source_document = normalize_document(json.loads((source_root.parent / "document.json").read_text()))
+                recording, cameras = source_document["recording"], source_document["cameras"]
             if source_robot:
                 resolve_robot_deployment(source_root, _id(source_robot))
                 components = self._components(source_root, source_robot)
@@ -246,15 +350,16 @@ class ConfigurationManager:
                 _write_yaml(robot / "manifest.yaml", {"schema_version": 1, "artifact_type": "robot_composition", "robot_id": robot_id, "name": name.strip(), "plugins": {"hardware_driver": f"{robot_id}.driver", "robot_model": f"{robot_id}.model"}})
                 write_checksums(robot)
                 resolve_robot_deployment(root, robot_id)
-                document = self._document(root, robot_id, recording)
+                document = self._document(root, robot_id, recording, cameras)
                 revision = self._persist_revision(robot_id, root, document)
                 atomic_json(workspace / "index.json", {"robot_id": robot_id, "name": name.strip(), "latest": revision, "etag": uuid.uuid4().hex, "draft": document})
         return self.get(robot_id)
 
     def get(self, robot_id):
         index = self._read(robot_id)
-        saved = json.loads((self._revision(robot_id, index["latest"]) / "document.json").read_text())
-        result = {**index, "saved": saved, "diff": differences(saved, index["draft"]), "history": []}
+        saved = normalize_document(json.loads((self._revision(robot_id, index["latest"]) / "document.json").read_text()))
+        draft = normalize_document(index["draft"])
+        result = {**index, "draft": draft, "saved": saved, "diff": differences(saved, draft), "history": []}
         for path in (self._workspace(robot_id) / "versions").glob("*/metadata.json"):
             result["history"].append(json.loads(path.read_text()))
         result["history"].sort(key=lambda x: x["created_at"], reverse=True)
@@ -270,8 +375,8 @@ class ConfigurationManager:
         return result
 
     def draft(self, robot_id, document, etag):
-        if not isinstance(document, dict) or set(document) != {"name", "resources", "recording"}:
-            raise DeploymentError("配置需包含 name、resources 和 recording")
+        if not isinstance(document, dict) or set(document) != {"name", "resources", "recording", "cameras"}:
+            raise DeploymentError("配置需包含 name、resources、cameras 和 recording")
         try:
             encoded = json.dumps(document, ensure_ascii=False, allow_nan=False).encode()
         except (ValueError, TypeError) as error:
@@ -294,6 +399,7 @@ class ConfigurationManager:
             raise DeploymentError("机器人名称不能为空")
         validate_values(document)
         validate_recording(document["recording"])
+        cameras = validate_cameras(document["cameras"])
         shutil.copytree(self._revision(robot_id, index["latest"]) / "root", root)
         driver, model, robot = self._components(root, robot_id)
         for path in (driver, model):
@@ -328,6 +434,7 @@ class ConfigurationManager:
         manifest = _yaml(robot / "manifest.yaml")
         manifest["name"] = document["name"]
         _write_yaml(robot / "manifest.yaml", manifest)
+        _write_yaml(robot / "cameras.yaml", {"schema_version": 1, "cameras": cameras})
         write_checksums(robot)
         resolve_robot_deployment(root, robot_id)
 
@@ -345,7 +452,7 @@ class ConfigurationManager:
         return self.get(robot_id) if save else {"ok": True, "message": "配置及驱动/模型/通道关联校验通过"}
 
     def restore(self, robot_id, revision, etag):
-        document = json.loads((self._revision(robot_id, revision) / "document.json").read_text())
+        document = normalize_document(json.loads((self._revision(robot_id, revision) / "document.json").read_text()))
         return self.draft(robot_id, document, etag)
 
     def apply(self, robot_id, revision, etag):
@@ -407,8 +514,9 @@ class ConfigurationManager:
         with tempfile.TemporaryDirectory(dir=self.state_root, prefix=".import-") as temporary:
             folder = Path(temporary)
             _safe_extract(Path(archive), folder / "input")
-            document = json.loads((folder / "input/workspace.json").read_text())
+            document = normalize_document(json.loads((folder / "input/workspace.json").read_text()))
             validate_recording(document["recording"])
+            validate_cameras(document["cameras"])
             root = folder / "root"
             for filename in ("driver", "model", "composition"):
                 deploy_archive(folder / "input" / f"{filename}.zip", root)
@@ -420,6 +528,7 @@ class ConfigurationManager:
             # Exported resource contents come from the validated plugin ZIPs;
             # only the independent recording plan is taken from workspace.json.
             result["draft"]["recording"] = document["recording"]
+            result["draft"]["cameras"] = document["cameras"]
             result = self.draft(robot_id, result["draft"], result["etag"])
             return self.validate(robot_id, result["etag"], save=True)
 

@@ -2,7 +2,7 @@
 (() => {
   let catalog = null, selected = null, tab = 'driver', dirty = false, settings = null, live = null, loading = false;
   const clone = value => JSON.parse(JSON.stringify(value));
-  const tabs = [['driver','驱动参数'],['joints','关节映射'],['model','模型与分组'],['motion','运动参数'],['channels','通道与工具'],['teleop','机械臂遥操作'],['chassis','底盘配置'],['grippers','夹爪配置'],['recording','录制方案']];
+  const tabs = [['driver','驱动参数'],['joints','关节映射'],['model','模型与分组'],['motion','运动参数'],['channels','通道与工具'],['teleop','机械臂遥操作'],['chassis','底盘配置'],['grippers','夹爪配置'],['cameras','相机配置'],['recording','录制方案']];
   const labels = {
     chassis:'底盘',grippers:'夹爪',command_topic:'控制接口名称',message_type:'底盘消息类型',frame_id:'速度参考坐标系',enable_button:'持续按住的使能按键',
     forward_axis:'前后摇杆轴',lateral_axis:'横移摇杆轴',turn_axis:'转向摇杆轴',invert_forward:'反转前后方向',invert_lateral:'反转横移方向',invert_turn:'反转转向方向',
@@ -31,6 +31,10 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
     target_pose_topic:'末端目标话题',tool_frame:'工具坐标系',axis_mapping:'坐标旋转矩阵（3×3）',position_scale:'位移比例',max_displacement:'最大相对位移（m）',
     orientation_enabled:'启用姿态映射',filter_alpha:'滤波系数（0–1）',position_deadband:'位置死区（m）',orientation_deadband:'姿态死区（rad）',workspace:'工作空间（m）',min:'最小 XYZ',max:'最大 XYZ',
     directory:'录制目录',topic:'话题',type:'消息类型',enabled:'启用',max_hz:'限频（Hz，0 不限）',event_max_hz:'网页刷新上限（Hz）',
+    backend:'相机接入方式',device_type:'相机型号',serial_no:'设备序列号',namespace:'ROS 命名空间',camera_name:'驱动节点名',width:'图像宽度',height:'图像高度',fps:'采集频率（Hz）',
+    color_format:'彩色格式',depth_format:'深度格式',pointcloud:'发布点云',align_depth:'深度空间对齐到彩色',normalize_timestamps:'转换曝光中点时间戳',required:'训练必需来源',
+    depth_auto_exposure:'深度 / D405 共享模块自动曝光',depth_exposure_us:'深度手动曝光（μs）',depth_gain:'深度手动增益',depth_auto_exposure_limit_us:'深度自动曝光上限（μs）',depth_auto_gain_limit:'深度自动增益上限',
+    color_auto_exposure:'D435 彩色自动曝光',color_exposure_us:'D435 彩色手动曝光（μs）',color_gain:'D435 彩色手动增益',rgbd_topic:'标准化 RGB-D 话题',metadata_topic:'来源元数据话题',pointcloud_topic:'标准化点云话题',pointcloud_metadata_topic:'点云元数据话题',
   };
   const enums = {message_type:['twist','twist_stamped'],command_type:['joint_state','float64','gripper_action'],feedback_type:['joint_state','float64'],position_unit:['m','rad'],input_axis:['trigger','grip'],enable_button:['primary_axis_click','grip_button','trigger_button','primary','secondary','menu','secondary_axis_click'],forward_axis:['primary_y','primary_x','secondary_y','secondary_x','none'],lateral_axis:['none','primary_x','primary_y','secondary_x','secondary_y'],turn_axis:['primary_x','primary_y','secondary_x','secondary_y','none'],kind:['move_j','move_l','move_p','servo_j','servo_p'],controller:['left','right','head'],clutch_controller:['left','right'],mode:['udp','vrdata']};
   const el = (tag, text, cls) => {const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;};
@@ -165,6 +169,50 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
     if(!grippers.length)form.append(el('p','尚未添加夹爪。可配置单夹爪、双夹爪或多个独立夹爪。'));
     grippers.forEach((g,index)=>{const field=el('fieldset'),heading=el('div',undefined,'row-heading');heading.append(el('h4',g.id),button('移除夹爪',()=>{grippers.splice(index,1);markDirty();renderForm();}));field.append(heading);const state=el('p','等待接收端状态','form-help');state.dataset.gripperState=g.id;field.append(state);peripheralFields(field,g);field.append(el('p','JointState 使用 name / position；Float64 使用单个位置值；GripperCommand 使用 control_msgs Action（需对应消息包与 Action 服务）。反馈支持 JointState 或 Float64。','form-help'));form.append(field);});updatePeripheralState(live);
   }
+
+  function cameraTemplate(id,device='d405'){
+    return {id,enabled:true,backend:'realsense',device_type:device,serial_no:'',namespace:id,camera_name:'camera',width:640,height:480,fps:30,color_format:'RGB8',depth_format:'Z16',pointcloud:false,align_depth:false,normalize_timestamps:true,required:true,depth_auto_exposure:true,depth_exposure_us:4500,depth_gain:64,depth_auto_exposure_limit_us:4500,depth_auto_gain_limit:64,color_auto_exposure:false,color_exposure_us:4500,color_gain:64,parameters:{}};
+  }
+  function nextCameraId(prefix='camera'){let n=1;const cameras=selected.draft.cameras||(selected.draft.cameras=[]);while(cameras.some(c=>c.id===prefix+n))n++;return prefix+n;}
+  async function syncCamerasToCapture(){
+    await persistDraft();
+    const capture=await api('/api/capture'),cfg=clone(capture.config);
+    for(const [id,source] of Object.entries(cfg.sources))if(source.managed_robot_camera){delete cfg.sources[id];}
+    const active=selected.draft.cameras.filter(c=>c.enabled);
+    for(const camera of active){
+      const base=camera.backend==='ros_topics'?'':`/${camera.namespace}/normalized`;
+      cfg.sources[camera.id]={kind:'rgbd',transport:'ros_rgbd',topic:camera.rgbd_topic||base+'/rgbd',metadata_topic:camera.metadata_topic||base+'/metadata',fps:camera.fps||30,exposure:{max_actual_us:5000,auto:camera.device_type==='d405'?camera.depth_auto_exposure:camera.color_auto_exposure,auto_exposure_limit_us:camera.depth_auto_exposure_limit_us||4500,auto_gain_limit:camera.depth_auto_gain_limit||64},sync_mode:camera.device_type==='d405'?'shared_stereo_free_run':'driver_frameset_free_run',trigger_origin:null,temporal_fusion:false,required:camera.required!==false,managed_robot_camera:true,camera_model:camera.device_type||camera.backend};
+      if(camera.pointcloud){cfg.sources[camera.id+'_cloud']={kind:'pointcloud',transport:'ros_pointcloud',topic:camera.pointcloud_topic||base+'/points',metadata_topic:camera.pointcloud_metadata_topic||base+'/points_metadata',camera_source_id:camera.id,required:false,persist:true,managed_robot_camera:true};}
+    }
+    const primary=active.find(c=>c.required!==false);cfg.alignment.primary_camera=primary?primary.id:'';
+    await api('/api/capture/config',{method:'POST',body:JSON.stringify({config:cfg,etag:capture.etag})});
+    notify(`已将 ${active.length} 台相机同步到连续采集方案`);
+  }
+  function renderCameras(form){
+    const cameras=selected.draft.cameras||(selected.draft.cameras=[]);
+    form.append(el('p','每个机器人版本保存自己的相机列表。RealSense 由独立 humanoid_camera launch 启动；ROS 话题相机由外部驱动发布标准化消息。管理器不回读曝光/增益，也不逐帧检查。','form-help'));
+    const tools=el('div',undefined,'button-row');
+    tools.append(button('添加 D405',()=>{const id=nextCameraId();cameras.push(cameraTemplate(id,'d405'));markDirty();renderForm();},'primary'),button('添加 D435',()=>{const id=nextCameraId();cameras.push(cameraTemplate(id,'d435'));markDirty();renderForm();}),button('添加 ROS 话题相机',()=>{const id=nextCameraId();cameras.push({id,enabled:true,backend:'ros_topics',required:true,pointcloud:false,rgbd_topic:`/${id}/normalized/rgbd`,metadata_topic:`/${id}/normalized/metadata`,pointcloud_topic:`/${id}/normalized/points`,pointcloud_metadata_topic:`/${id}/normalized/points_metadata`,fps:30});markDirty();renderForm();}),button('载入 2×D405 + D435 模板',()=>{if(cameras.length&&!confirm('这会替换当前相机列表，是否继续？'))return;cameras.splice(0,cameras.length,{...cameraTemplate('front','d405'),pointcloud:true},cameraTemplate('left','d405'),cameraTemplate('right','d435'));markDirty();renderForm();}),button('同步到连续采集方案',()=>operation(syncCamerasToCapture)));
+    form.append(tools);
+    if(!cameras.length)form.append(el('p','尚未配置相机。可按机器人实际设备添加任意数量。'));
+    cameras.forEach((camera,index)=>{
+      const field=el('fieldset'),heading=el('div',undefined,'row-heading');heading.append(el('h4',camera.id||`相机 ${index+1}`),button('移除相机',()=>{cameras.splice(index,1);markDirty();renderForm();}));field.append(heading);
+      const grid=el('div',undefined,'parameter-grid');field.append(grid);
+      const add=(key,options=null)=>grid.append(scalar(key,camera[key],value=>{const old=key==='id'?camera.id:null;camera[key]=value;if(key==='id'&&camera.namespace===old)camera.namespace=value;if(key==='backend'||key==='device_type')renderForm();},{options}));
+      add('id');add('enabled');add('backend',['realsense','ros_topics']);add('required');add('pointcloud');add('fps');
+      if(camera.backend==='ros_topics'){
+        for(const key of ['rgbd_topic','metadata_topic'])add(key);
+        if(camera.pointcloud)for(const key of ['pointcloud_topic','pointcloud_metadata_topic'])add(key);
+      }else{
+        add('device_type');add('serial_no');add('namespace');add('camera_name');add('width');add('height');add('color_format');add('depth_format');add('align_depth');add('normalize_timestamps');
+        add('depth_auto_exposure');if(camera.depth_auto_exposure){add('depth_auto_exposure_limit_us');add('depth_auto_gain_limit');}else{add('depth_exposure_us');add('depth_gain');}
+        if(String(camera.device_type).toLowerCase()!=='d405'){add('color_auto_exposure');if(camera.color_auto_exposure)field.append(el('p','当前配置不会限制 D435 彩色自动曝光上限；需要 5 ms 配置上限时请关闭彩色自动曝光并使用 4500 μs 手动值。','notice error'));else{add('color_exposure_us');add('color_gain');}}
+        const details=el('details'),summary=el('summary','高级官方驱动参数'),area=el('textarea');area.rows=5;area.value=JSON.stringify(camera.parameters||{},null,2);area.onchange=()=>{try{camera.parameters=JSON.parse(area.value);area.setCustomValidity('');markDirty();}catch(_){area.setCustomValidity('请输入 JSON 对象');area.reportValidity();}};details.append(summary,area);field.append(details);
+      }
+      form.append(field);
+    });
+    form.append(el('p','同时启用多台 RealSense 时必须填写各自唯一序列号。保存并应用机器人版本后，managed_robot.launch.py 默认启动这些独立相机节点；也可传 start_cameras:=false。','form-help'));
+  }
   function updatePeripheralState(data){const event=data?.platform?.teleop;const identity=event?.data?.configuration?.robot_id;const running=event?.fresh&&(!identity||identity===selected?.robot_id);const base=event?.data?.chassis;setText('#chassisRuntimeState',running&&base?`运行状态：${base.state} · ${base.reason||''} · ${base.command_topic||''}`:'当前配置没有新鲜的接收端状态，保存后由接收端加载');for(const node of $$('[data-gripper-state]')){const g=event?.data?.grippers?.[node.dataset.gripperState];node.textContent=running&&g?`运行状态：${g.state} · ${g.reason||''} · 反馈 ${g.feedback??'—'} / 目标 ${g.target??'—'} ${g.position_unit||''}`:'当前夹爪接口尚未接入';}}
   function renderRecording(form){
     const recording=selected.draft.recording;form.append(scalar('directory',recording.directory,v=>recording.directory=v));
@@ -173,7 +221,7 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
     const choice=el('select');choice.setAttribute('aria-label','从 ROS Graph 添加录制话题');choice.append(el('option','从当前 ROS Graph 选择话题'));for(const item of discoveredTopics){const option=el('option',item.topic);option.value=item.topic;choice.append(option);}choice.onchange=()=>{const item=discoveredTopics.find(t=>t.topic===choice.value);if(item&&!recording.subscriptions.some(t=>t.topic===item.topic)){recording.subscriptions.push({topic:item.topic,type:item.types[0],enabled:true,outputs:['record'],max_hz:0,event_max_hz:0});markDirty();renderForm();}};form.append(choice,button('添加自定义话题',()=>{recording.subscriptions.push({topic:'/custom/topic',type:'std_msgs/msg/String',enabled:true,outputs:['record'],max_hz:0,event_max_hz:0});markDirty();renderForm();}));
     form.append(el('p','此处保存机器人专属录制方案。在“话题录制”页载入并应用后，下一次录制使用该方案。','form-help'));
   }
-  const renderers={driver:renderDriver,joints:renderJoints,model:renderModel,motion:renderMotion,channels:renderChannels,teleop:renderTeleop,chassis:renderChassis,grippers:renderGrippers,recording:renderRecording};
+  const renderers={driver:renderDriver,joints:renderJoints,model:renderModel,motion:renderMotion,channels:renderChannels,teleop:renderTeleop,chassis:renderChassis,grippers:renderGrippers,cameras:renderCameras,recording:renderRecording};
   function renderForm(){if(!selected)return;const form=$('#robotForm');form.replaceChildren(el('h3',tabs.find(t=>t[0]===tab)[1]));renderers[tab](form);for(const t of $$('table',form)){const headers=$$('th',t).map(h=>h.textContent);$$('tbody tr',t).forEach((row,index)=>$$('td',row).forEach((cell,column)=>{const control=cell.querySelector('input,select');if(control&&!control.getAttribute('aria-label'))control.setAttribute('aria-label',`${headers[column]} · 第 ${index+1} 行`);}));}}
   function renderEditor(){
     $('#robotEmpty').classList.toggle('hidden',!!selected);$('#robotEditor').classList.toggle('hidden',!selected);if(!selected)return;
@@ -214,7 +262,7 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
       for(const [key,title] of [['configuration','配置与进程'],['diagnostics','驱动连接'],['teleop','遥操作']]){const block=el('div'),item=platform[key];block.append(el('strong',title));let content='尚未收到状态';if(item){if(key==='diagnostics'){content=(item.data.status||[]).filter(s=>s.name?.includes('driver')).map(s=>`${s.name}: ${s.message}\n${(s.values||[]).filter(v=>['connected','active','watchdog_stopped','last_stop_reason'].includes(v.key)).map(v=>`${v.key}: ${v.value}`).join(' · ')}`).join('\n')||'尚未收到驱动诊断';}else if(key==='configuration'){content=`${item.data.robot_id||'未知'} · ${item.data.state||'未知'}\n${item.data.missing_nodes?.length?'等待节点：'+item.data.missing_nodes.join(', '):'启动的节点已在 ROS Graph 中出现'}`;}else{const t=item.data;content=`${t.enabled?'遥操作已启用':'遥操作未启用'} · 已接收 ${t.received_packets||0} 包 · 拒绝 ${t.rejected_packets||0} 包\n${Object.entries(t.channels||{}).map(([id,c])=>`${id}: ${c.state} · ${c.reason||''}`).join('\n')}\n接收端配置：${t.configuration?.robot_id||'未指定机器人'} · ${t.configuration?.sha256?.slice(0,12)||'未知'}`;}content+=`\n${item.fresh?'最近更新':'状态过期'}：${item.age}s 前`;}block.append(el('p',content));panel.append(block);}
       const control=$('#controlSourceState')?.closest('article');if(control)control.classList.add('hidden');
     }
-    if(selected){const ros=data.ros||{},nodes=ros.discovered_nodes||[];const busy=nodes.some(n=>['humanoid_driver_runtime','humanoid_motion_control','hc_teleop_recv','humanoid_configuration_status'].includes(n.name));const enabled=ros.state==='running'&&ros.graph_age<=5&&!busy&&!recording.recording&&!data.replay?.is_active;$('#applyRobot').disabled=!enabled;
+    if(selected){const ros=data.ros||{},nodes=ros.discovered_nodes||[];const busy=nodes.some(n=>['humanoid_driver_runtime','humanoid_motion_control','hc_teleop_recv','humanoid_configuration_status','timestamp_adapter'].includes(n.name));const enabled=ros.state==='running'&&ros.graph_age<=5&&!busy&&!recording.recording&&!data.replay?.is_active;$('#applyRobot').disabled=!enabled;
       setText('#robotApplyHint',recording.recording?'正在录制，可保存草稿和版本；停止录制后再应用。':busy?'机器人正在运行。停止对应启动进程后，可应用已保存版本。':enabled?'可应用已保存版本。应用完成后，下一次启动机器人时加载。':'等待新鲜 ROS 状态以确认机器人已停止；当前可编辑和保存配置。');}
   }
   function disconnected(){setText('#runningRobot','网页服务连接中断');setText('#runningRevision','未知');setText('#sessionRecording','状态未知');$('#applyRobot').disabled=true;}

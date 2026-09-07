@@ -2,6 +2,8 @@
 
 相机和录制器是两个独立进程。`humanoid_camera` 启动官方 RealSense ROS 驱动，并转换曝光中点；`humanoid_manager` 不操作 SDK，不在采集回调中设置相机参数。相机不做曝光/增益回读或逐帧曝光验收。
 
+机器人配置页的“相机配置”保存机器人专属的相机数量、型号、序列号、ROS 命名空间、分辨率、帧率和点云选项。部署后生成 `robots/<robot_id>/cameras.yaml`，`managed_robot.launch.py` 通过独立的 `humanoid_camera/multi_camera.launch.py` 启动每台官方驱动和时间戳适配节点。非 RealSense 相机可选择 `ros_topics`，直接填写已标准化的 RGB-D 与 metadata 话题。
+
 ## ROS 来源
 
 | transport | 输入 | 元数据 |

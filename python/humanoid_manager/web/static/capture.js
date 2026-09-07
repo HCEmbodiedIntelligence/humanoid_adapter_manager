@@ -25,7 +25,7 @@
       let n=1;while(cfg.sources[kind+'_'+n])n++;const ident=kind+'_'+n;
       cfg.sources[ident]={kind,required:!['event','pointcloud'].includes(kind),transport:kind==='rgbd'?'ros_rgbd':kind==='pointcloud'?'ros_pointcloud':kind==='event'?'envelope':'ros_joint_state'};
       const source=cfg.sources[ident];
-      if(kind==='rgbd')Object.assign(source,{fps:30,topic:'/front/normalized/rgbd',metadata_topic:'/front/normalized/metadata',sync_mode:'shared_stereo_free_run',trigger_origin:null,exposure:{max_actual_us:5000,auto:true,auto_exposure_limit_us:4500,auto_gain_limit:64}});
+      if(kind==='rgbd')Object.assign(source,{fps:30,topic:'/front/normalized/rgbd',metadata_topic:'/front/normalized/metadata',camera_model:'d405',sync_mode:'shared_stereo_free_run',trigger_origin:null,exposure:{max_actual_us:5000,auto:true,auto_exposure_limit_us:4500,auto_gain_limit:64}});
       if(kind==='pointcloud')Object.assign(source,{topic:'/front/normalized/points',metadata_topic:'/front/normalized/points_metadata',camera_source_id:Object.keys(cfg.sources).find(k=>cfg.sources[k].kind==='rgbd')||'',persist:true});
       if(['state','action'].includes(kind))Object.assign(source,{topic:kind==='action'?'/hc_teleop/joint_cmd':'/joint_states',timestamp_semantics:kind==='action'?'send':'read',timestamp_uncertainty_ns:null,timestamp_evidence:'',fields:{position:{semantics:'continuous',units:'rad',coordinate_frame:'joint'}}});
       if(kind==='action')Object.assign(source,{semantics:'absolute_hold',pairing:'active_at_target',action_stage:'sent'});render();
@@ -39,6 +39,8 @@
       if(source.transport.startsWith('ros_'))field(fields,'ROS 话题',source.topic||'',v=>source.topic=v);
       if(source.kind==='rgbd'){
         source.exposure=source.exposure||{max_actual_us:5000,auto:true,auto_exposure_limit_us:4500,auto_gain_limit:64};
+        source.camera_model=source.camera_model||'d405';
+        field(fields,'相机型号 / 接入类型',source.camera_model,v=>source.camera_model=v);
         field(fields,'相机新帧频率（Hz）',source.fps||30,v=>source.fps=v);
         field(fields,'来源元数据话题',source.metadata_topic||'',v=>source.metadata_topic=v);
 
@@ -46,16 +48,19 @@
         if(source.exposure.auto){field(fields,'相机 YAML 自动曝光上限（μs）',source.exposure.auto_exposure_limit_us||4500,v=>source.exposure.auto_exposure_limit_us=v);field(fields,'相机 YAML 自动增益上限',source.exposure.auto_gain_limit||64,v=>source.exposure.auto_gain_limit=v);}
         field(fields,'同步方式',source.sync_mode,v=>source.sync_mode=v,[['shared_stereo_free_run','共享采集模块 / 自由运行'],['verified_internal','已验证内部同步'],['hardware_trigger','其他设备 / 共同触发']]);
         field(fields,'作为主相机',cfg.alignment.primary_camera===ident,v=>cfg.alignment.primary_camera=v?ident:'');
-        card.append(node('p','D405 使用共享 depth_module，不支持外部多相机同步输入。相机节点独立启动；自由运行的网格偏差逐帧验收。','form-help'));
-        card.append(button('下载 D405 相机节点启动 YAML',()=>{
-          const value={'device_type':'d405','enable_color':true,'enable_depth':true,'enable_sync':true,
-            'depth_module.depth_profile':'640,480,'+(source.fps||30),'depth_module.color_profile':'640,480,'+(source.fps||30),'depth_module.global_time_enabled':true,
+        card.append(node('p','相机型号、序列号和启动参数由机器人“相机配置”保存；此处只设置数据采集与时间关联。D405 使用共享 depth_module，D435 使用独立 rgb_camera。','form-help'));
+        card.append(button('下载当前型号的官方驱动 YAML',()=>{
+          const model=String(source.camera_model||'d405').toLowerCase(),isD405=model==='d405';
+          const value={'device_type':model,'enable_color':true,'enable_depth':true,'enable_sync':true,
+            'depth_module.depth_profile':'640,480,'+(source.fps||30),'depth_module.global_time_enabled':true,
             'depth_module.enable_auto_exposure':true,'depth_module.auto_exposure_limit':source.exposure.auto_exposure_limit_us||4500,
             'depth_module.auto_gain_limit':source.exposure.auto_gain_limit||64,'depth_module.auto_exposure_limit_toggle':true,
             'depth_module.auto_gain_limit_toggle':true,'align_depth.enable':false,'temporal_filter.enable':false,'hdr_merge.enable':false,'pointcloud.stream_filter':2,'pointcloud.enable':Object.values(cfg.sources).some(x=>x.camera_source_id===ident)};
+          if(isD405){value['depth_module.color_profile']='640,480,'+(source.fps||30);value['depth_module.color_format']='RGB8';}
+          else{value['rgb_camera.color_profile']='640,480,'+(source.fps||30);value['rgb_camera.color_format']='RGB8';value['rgb_camera.enable_auto_exposure']=false;value['rgb_camera.exposure']=4500;value['rgb_camera.gain']=64;value['rgb_camera.global_time_enabled']=true;}
           // JSON is valid YAML 1.2 and preserves strings/booleans without custom escaping.
           const blob=new Blob([JSON.stringify({'/**':{ros__parameters:value}},null,2)],{type:'application/yaml'});
-          const url=URL.createObjectURL(blob),a=node('a');a.href=url;a.download=ident+'-d405.yaml';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+          const url=URL.createObjectURL(blob),a=node('a');a.href=url;a.download=ident+'-'+model+'.yaml';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
         }));
       }
       if(source.kind==='pointcloud'){field(fields,'来源元数据话题',source.metadata_topic||'',v=>source.metadata_topic=v);field(fields,'来源 RGB-D 组',source.camera_source_id||'',v=>source.camera_source_id=v,Object.keys(cfg.sources).filter(k=>cfg.sources[k].kind==='rgbd').map(k=>[k,k]));field(fields,'无损保存点云',source.persist!==false,v=>source.persist=v);card.append(node('p','点云时间继承来源深度；按 pair_seq 和来源帧号绑定。必需点云必须保存，可选点云可在后续重建。','form-help'));}
@@ -77,6 +82,6 @@
   async function showRow(){if(!selected)return;const ident=selected.session_id,k=rowIndex;const row=await api('/api/sessions/'+encodeURIComponent(ident)+'/row?k='+k+'&version='+encodeURIComponent(version));if(selected.session_id!==ident||rowIndex!==k)return;const area=document.querySelector('#captureRow');area.replaceChildren();area.append(node('p',`目标帧 ${k} · ${Number(row.timestamp||0).toFixed(3)} s · ${row.valid?'对齐合格':'对齐无效'} · ${row.persistence_state==='committed'?'文件已提交':'持久化未完成'}`,row.exportable?'capture-good':'capture-invalid'));const reasons=[...(row.invalid_reasons||[]),...(row.persistence_reasons||[]),...(row.manual_invalid_reasons||[])];if(reasons.length)area.append(node('p',reasons.join('；'),'capture-invalid'));const pre=node('pre',JSON.stringify(row,null,2),'compact-data');const details=node('details');details.append(node('summary','逐字段来源与时间误差'),pre);area.append(details);const videos=document.querySelector('#captureVideos');videos.replaceChildren();for(const [source,binding] of Object.entries(row.video_bindings||{})){if(row.persistence_state!=='committed')continue;const card=node('div');card.append(node('h3',source));const player=node('video');player.controls=true;player.preload='metadata';player.muted=true;player.src='/api/sessions/'+encodeURIComponent(ident)+'/file?path='+encodeURIComponent(binding.video_segment_path);player.onloadedmetadata=()=>{player.currentTime=binding.pts*binding.time_base[0]/binding.time_base[1];};const fallback=()=>{const image=node('img');image.alt=source+' 的目标帧 '+k;image.src='/api/sessions/'+encodeURIComponent(ident)+'/preview?k='+k+'&source='+encodeURIComponent(source)+'&version='+encodeURIComponent(version);return image;};if(player.canPlayType('video/mp4; codecs=avc1.42E01E')){player.onerror=()=>player.replaceWith(fallback());card.append(player);}else card.append(fallback());card.append(node('p',`原始帧 ${binding.rgb_source_seq} · 显示帧 ${binding.display_frame_index}`));videos.append(card);}}
   function status(data){const box=document.querySelector('#captureLive');if(!box)return;const s=data.capture||{},job=data.capture_job||{};box.replaceChildren();box.append(node('p',`${s.session_id||'尚未开始'} · ${{idle:'未采集',warming_up:'等待必需来源 / 首组图像',recording:'采集中',draining:'保存收尾中',completed:'已完成',failed:'采集失败'}[s.state]||s.state} · ${s.counters?.rows||0} 行 / ${s.counters?.valid_rows||0} 行合格`));if(s.active_marker)box.append(node('p','正在标记无效片段，再次点击结束。','capture-invalid'));for(const error of s.errors||[])box.append(node('p',error.reason,'capture-invalid'));if(job.state&&job.state!=='idle'){box.append(node('p',`数据处理：${{starting:'准备中',exporting:'正在导出',realigning:'正在重新对齐',completed:'已完成',failed:'失败'}[job.state]||job.state} ${job.error||''} ${job.frames_written?'已导出 '+job.frames_written+' 帧':''} ${job.result?.path||''}`));}if(s.encoders){const p=node('p',`入口队列峰值 ${s.ingress?.peak_items||0} 条 · 编码 ${Object.entries(s.encoders).map(([k,v])=>`${k}: ${v.encoded} 帧，拒绝 ${v.queue.rejected}`).join(' / ')} · 文件提交 ${s.writer?.committed_files||0}`);box.append(p);}}
   async function open(){try{state=await api('/api/capture');savedConfig=JSON.stringify(state.config);render();}catch(error){toast(error.message,true);}}
-  setInterval(async()=>{if(!state||root.hidden||!document.querySelector('#capturePreflight'))return;try{const current=await api('/api/capture');state.preflight=current.preflight;const list=document.querySelector('#capturePreflight');if(!list)return;list.replaceChildren();for(const issue of current.preflight.issues)list.append(node('li',`${issue.source_id||'采集配置'}：${issue.reason}`));if(current.preflight.ready)list.append(node('li','来源就绪，逐帧质量仍会持续验证。'));}catch(_){}},3000);
+  setInterval(async()=>{if(!state||root.hidden||!document.querySelector('#capturePreflight'))return;try{const current=await api('/api/capture');state.preflight=current.preflight;const list=document.querySelector('#capturePreflight');if(!list)return;list.replaceChildren();for(const issue of current.preflight.issues)list.append(node('li',`${issue.source_id||'采集配置'}：${issue.reason}`));if(current.preflight.ready)list.append(node('li','来源就绪，采集时会持续检查输入完整性与时间关联。'));}catch(_){}},3000);
   window.CaptureUI={open,status};if(location.hash==='#capture')open();
 })();

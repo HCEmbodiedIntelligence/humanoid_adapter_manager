@@ -42,6 +42,7 @@ def test_edit_validate_apply_restore_export_roundtrip(manager, tmp_path):
     manager.export('lab', robot['latest'], exported)
     imported = manager.import_workspace(exported, 'second', '第二台')
     assert imported['draft']['recording']['directory'] == '/tmp/robot-recordings'
+    assert imported['draft']['cameras'] == []
     assert imported['draft']['resources'] == robot['draft']['resources']
     restored = manager.restore('lab', original, robot['etag'])
     assert restored['diff']
@@ -128,3 +129,37 @@ def test_add_receiver_resource_and_restore_without_repacking_model(manager):
     restored=manager.validate('lab',restored['etag'],save=True)
     manager.apply('lab',restored['latest'],restored['etag'])
     assert 'hc_teleop_config' not in resolve_robot_deployment(manager.plugin_root,'lab').resources
+
+
+def test_robot_camera_configuration_is_versioned_deployed_and_exported(manager, tmp_path):
+    robot = create(manager)
+    doc = copy.deepcopy(robot['draft'])
+    doc['cameras'] = [
+        {'id': 'front', 'device_type': 'd405', 'serial_no': '405001'},
+        {'id': 'left', 'device_type': 'd405', 'serial_no': '405002'},
+        {'id': 'right', 'device_type': 'd435', 'serial_no': '435001',
+         'pointcloud': True, 'color_auto_exposure': False},
+    ]
+    robot = manager.draft('lab', doc, robot['etag'])
+    robot = manager.validate('lab', robot['etag'], save=True)
+    manager.apply('lab', robot['latest'], robot['etag'])
+    deployed = manager.plugin_root / 'robots/lab/cameras.yaml'
+    camera_config = __import__('yaml').safe_load(deployed.read_text())
+    assert [camera['device_type'] for camera in camera_config['cameras']] == ['d405', 'd405', 'd435']
+    assert camera_config['cameras'][2]['color_exposure_us'] == 4500
+    exported = tmp_path / 'cameras.zip'
+    manager.export('lab', robot['latest'], exported)
+    imported = manager.import_workspace(exported, 'camera_copy', '相机副本')
+    assert imported['draft']['cameras'] == robot['draft']['cameras']
+
+
+def test_multiple_realsense_require_unique_serial_numbers(manager):
+    robot = create(manager)
+    doc = copy.deepcopy(robot['draft'])
+    doc['cameras'] = [
+        {'id': 'front', 'device_type': 'd405', 'serial_no': ''},
+        {'id': 'right', 'device_type': 'd435', 'serial_no': ''},
+    ]
+    robot = manager.draft('lab', doc, robot['etag'])
+    with pytest.raises(DeploymentError, match='序列号'):
+        manager.validate('lab', robot['etag'])

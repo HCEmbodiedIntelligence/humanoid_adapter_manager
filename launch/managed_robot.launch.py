@@ -3,12 +3,14 @@
 
 from pathlib import Path
 import json
+from ament_index_python.packages import get_package_share_directory
 from humanoid_manager.runtime_state import acquire_deployment_lock, configuration_identity
 
 _LEASES = []
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction, Shutdown
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, Shutdown
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -35,6 +37,7 @@ def _launch_registered_robot(context):
     start_driver = LaunchConfiguration("start_driver")
     start_motion = LaunchConfiguration("start_motion")
     start_teleop = LaunchConfiguration("start_teleop")
+    start_cameras = LaunchConfiguration("start_cameras")
 
     actions = [
         Node(
@@ -98,6 +101,18 @@ def _launch_registered_robot(context):
             "start_teleop is true but the deployed profile has no hc_teleop_config; select a model with hc_teleop_recv configuration"
         )
 
+    camera_config = deployment.manifest_path.parent / "cameras.yaml"
+    if camera_config.is_file():
+        actions.append(
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    str(Path(get_package_share_directory("humanoid_camera")) / "launch" / "multi_camera.launch.py")
+                ),
+                launch_arguments={"camera_config": str(camera_config)}.items(),
+                condition=IfCondition(start_cameras),
+            )
+        )
+
     expected = [name for argument, name in (("start_driver", "humanoid_driver_runtime"),
         ("start_motion", "humanoid_motion_control"), ("start_teleop", "hc_teleop_recv"))
         if LaunchConfiguration(argument).perform(context).lower() in {"1", "true", "yes", "on"}]
@@ -122,6 +137,7 @@ def generate_launch_description():
             DeclareLaunchArgument("start_driver", default_value="true"),
             DeclareLaunchArgument("start_motion", default_value="true"),
             DeclareLaunchArgument("start_teleop", default_value="true"),
+            DeclareLaunchArgument("start_cameras", default_value="true"),
             OpaqueFunction(function=_launch_registered_robot),
         ]
     )
