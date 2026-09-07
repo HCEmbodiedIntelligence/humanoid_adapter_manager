@@ -1,8 +1,8 @@
-/* Robot configuration editing never publishes control commands. */
+/* Motion is published only by an explicit initial-pose button after confirmation. */
 (() => {
   let catalog = null, selected = null, tab = 'driver', dirty = false, settings = null, live = null, loading = false;
   const clone = value => JSON.parse(JSON.stringify(value));
-  const tabs = [['driver','驱动参数'],['joints','关节映射'],['model','模型与分组'],['motion','运动参数'],['channels','通道与工具'],['teleop','机械臂遥操作'],['chassis','底盘配置'],['grippers','夹爪配置'],['cameras','相机配置'],['recording','录制方案']];
+  const tabs = [['driver','驱动参数'],['joints','关节映射'],['model','模型与分组'],['motion','运动参数'],['channels','通道与工具'],['poses','初始姿态'],['teleop','机械臂遥操作'],['chassis','底盘配置'],['grippers','夹爪配置'],['cameras','相机配置'],['recording','录制方案']];
   const labels = {
     chassis:'底盘',grippers:'夹爪',command_topic:'控制接口名称',message_type:'底盘消息类型',frame_id:'速度参考坐标系',enable_button:'持续按住的使能按键',
     forward_axis:'前后摇杆轴',lateral_axis:'横移摇杆轴',turn_axis:'转向摇杆轴',invert_forward:'反转前后方向',invert_lateral:'反转横移方向',invert_turn:'反转转向方向',
@@ -36,6 +36,7 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
     max_actual_exposure_us:'曝光要求上限（μs）',rgbd_max_midpoint_skew_ms:'RGB-D 曝光中点差上限（ms）',camera_max_error_ms:'图像到数据网格偏差上限（ms）',
     depth_auto_exposure:'深度 / 共享成像模块自动曝光',depth_exposure_us:'深度手动曝光（μs）',depth_gain:'深度手动增益 / 亮度补偿',depth_auto_exposure_limit_us:'深度自动曝光上限（μs）',depth_auto_gain_limit:'深度自动增益 / 亮度补偿上限',
     color_auto_exposure:'RGB 自动曝光',color_exposure_us:'RGB 手动曝光（μs）',color_gain:'RGB 手动增益 / 亮度补偿',rgbd_topic:'标准化 RGB-D 话题',metadata_topic:'来源元数据话题',pointcloud_topic:'标准化点云话题',pointcloud_metadata_topic:'点云元数据话题',
+    velocity_scale:'回位速度比例',acceleration_scale:'回位加速度比例',jerk_scale:'回位加加速度比例',timeout_sec:'回位超时（秒）',positions_rad:'目标位置（rad）',
   };
   const enums = {message_type:['twist','twist_stamped'],command_type:['joint_state','float64','gripper_action'],feedback_type:['joint_state','float64'],position_unit:['m','rad'],input_axis:['trigger','grip'],enable_button:['primary_axis_click','grip_button','trigger_button','primary','secondary','menu','secondary_axis_click'],forward_axis:['primary_y','primary_x','secondary_y','secondary_x','none'],lateral_axis:['none','primary_x','primary_y','secondary_x','secondary_y'],turn_axis:['primary_x','primary_y','secondary_x','secondary_y','none'],kind:['move_j','move_l','move_p','servo_j','servo_p'],controller:['left','right','head'],clutch_controller:['left','right'],mode:['udp','vrdata']};
   const el = (tag, text, cls) => {const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;};
@@ -132,6 +133,50 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
     const add=button('新增运动通道',()=>{channels.push({name:`channel_${channels.length+1}`,kind:'servo_p',endpoint:`/teleop/channel_${channels.length+1}`,priority:50,group:params('motion_params').joint_group_names[0],base_frame:selected.model_info.links[0]||'',tip_frame:tools[0]?.name||'',fk_pose_topic:`/teleop/channel_${channels.length+1}/fk_pose`});markDirty();renderForm();});form.append(add);arrayFields(form,'channels',channels);
     const field=el('fieldset');field.append(el('legend','工具坐标'));arrayFields(field,'tools',tools);field.append(button('新增工具',()=>{tools.push({name:`tool_${tools.length+1}`,parent_frame:selected.model_info.links[0]||'',child_frame:`tool_${tools.length+1}`,translation_m:[0,0,0],rotation_xyzw:[0,0,0,1]});markDirty();renderForm();}));form.append(field);
   }
+  function moveJChannels(){return (selected.draft.resources.channel_config?.channels||[]).filter(channel=>channel.kind==='move_j'&&channel.group);}
+  function groupDetails(channelName){
+    const channel=moveJChannels().find(item=>item.name===channelName),motion=params('motion_params');if(!channel)return null;
+    const names=motion[`groups.${channel.group}`]||[],lower=motion[`group_lower_limits.${channel.group}`]||[],upper=motion[`group_upper_limits.${channel.group}`]||[];
+    return {channel,names,lower,upper};
+  }
+  function defaultPoseTarget(channel){const group=groupDetails(channel.name);return {channel:channel.name,positions_rad:group.names.map((_,index)=>Math.min(group.upper[index],Math.max(group.lower[index],0)))};}
+  function addInitialPose(){
+    const channels=moveJChannels(),used=new Set(),targets=[];
+    for(const channel of channels){const group=groupDetails(channel.name);if(!group||!group.names.length||group.names.some(name=>used.has(name)))continue;group.names.forEach(name=>used.add(name));targets.push(defaultPoseTarget(channel));}
+    if(!targets.length){toast('请先配置至少一个带关节分组的 MoveJ 通道',true);return;}
+    const poses=selected.draft.initial_poses||(selected.draft.initial_poses=[]);let n=1;while(poses.some(p=>p.id===`teleop_home_${n}`))n++;
+    poses.push({id:`teleop_home_${n}`,name:poses.length?'初始姿态 '+n:'遥操作初始姿态',velocity_scale:.15,acceleration_scale:.15,jerk_scale:.15,timeout_sec:60,targets});markDirty();renderForm();
+  }
+  async function executeInitialPose(pose){
+    const groups=pose.targets.map(target=>groupDetails(target.channel)?.channel.group||target.channel).join('、');
+    if(!confirm(`将 ${selected.draft.name} 的 ${groups} 移动到“${pose.name}”。请确认机器人周围无人和障碍物，并已停止遥操作使能。是否执行？`))return;
+    const result=await post(`${robotUrl()}/poses/${encodeURIComponent(pose.id)}/execute`);
+    notify(`${result.pose_name} 已执行完成：${result.results.map(item=>item.group).join('、')}`);
+  }
+  function renderInitialPoses(form){
+    const poses=selected.draft.initial_poses||(selected.draft.initial_poses=[]);
+    form.append(el('p','保存机器人回到遥操作起始位置的关节角。一次姿态可包含双臂或多个互不重叠的 MoveJ 通道；点击执行时使用当前已部署版本。','form-help'));
+    form.append(button('新增初始姿态',addInitialPose,'primary'));
+    if(!poses.length){form.append(el('p','尚未配置初始姿态。新增后会按各关节的 0 rad 建议值生成，可逐项修改；若 0 超出限位则使用最近限位值。','pose-empty'));return;}
+    poses.forEach((pose,poseIndex)=>{
+      const card=el('fieldset',undefined,'pose-card'),heading=el('div',undefined,'row-heading pose-heading');heading.append(el('h4',pose.name||pose.id));
+      const actions=el('div',undefined,'button-row'),saved=(selected.saved.initial_poses||[]).find(item=>item.id===pose.id),same=saved&&JSON.stringify(saved)===JSON.stringify(pose),deployed=selected.deployed?.revision===selected.latest;
+      const execute=button('执行已部署姿态',()=>operation(()=>executeInitialPose(pose)),'motion-command');execute.disabled=!(same&&deployed);execute.title=!same?'先保存该姿态为新版本':!deployed?'先应用最新保存版本':'发送 MoveJ 并等待真实关节反馈到位';
+      actions.append(execute,button('删除姿态',()=>{poses.splice(poseIndex,1);markDirty();renderForm();}));heading.append(actions);card.append(heading);
+      const config=el('div',undefined,'parameter-grid');for(const key of ['id','name','velocity_scale','acceleration_scale','jerk_scale','timeout_sec'])config.append(scalar(key,pose[key],value=>pose[key]=value));card.append(config);
+      const usedByOther=targetIndex=>{const result=new Set();pose.targets.forEach((target,index)=>{if(index!==targetIndex)(groupDetails(target.channel)?.names||[]).forEach(name=>result.add(name));});return result;};
+      pose.targets.forEach((target,targetIndex)=>{
+        const group=groupDetails(target.channel),targetBox=el('section',undefined,'pose-target'),targetHead=el('div',undefined,'row-heading');targetHead.append(el('h4',group?`关节组：${group.channel.group}`:'无效 MoveJ 通道'));
+        const selectable=moveJChannels().filter(channel=>{const details=groupDetails(channel.name),other=usedByOther(targetIndex);return channel.name===target.channel||details.names.every(name=>!other.has(name));}).map(channel=>channel.name);
+        const channelLabel=scalar('channel',target.channel,value=>{target.channel=value;target.positions_rad=defaultPoseTarget(moveJChannels().find(item=>item.name===value)).positions_rad;renderForm();},{options:selectable});channelLabel.className='pose-channel';
+        targetHead.append(channelLabel,button('移除此组',()=>{pose.targets.splice(targetIndex,1);markDirty();renderForm();}));targetBox.append(targetHead);
+        if(group){const joints=table(['关节','目标 rad','目标 °','允许范围 rad']);group.names.forEach((name,index)=>{const row=el('tr');row.append(el('td',name));const cell=inputCell(target.positions_rad[index]??0,value=>target.positions_rad[index]=value),input=cell.querySelector('input');input.min=group.lower[index];input.max=group.upper[index];input.step='0.001';row.append(cell,el('td',((target.positions_rad[index]??0)*180/Math.PI).toFixed(2)),el('td',`${group.lower[index]} ～ ${group.upper[index]}`));joints.body.append(row);});targetBox.append(joints.wrapper);}card.append(targetBox);
+      });
+      const otherUsed=usedByOther(-1),available=moveJChannels().filter(channel=>(groupDetails(channel.name)?.names||[]).every(name=>!otherUsed.has(name)));
+      if(available.length)card.append(button('添加关节组',()=>{pose.targets.push(defaultPoseTarget(available[0]));markDirty();renderForm();}));
+      const state=el('p',same&&deployed?'此姿态已部署，可以执行。':same?'此姿态已保存，应用最新版本后可以执行。':'姿态有未保存修改，校验、保存并应用后可以执行。','pose-state');card.append(state);form.append(card);
+    });
+  }
   function renderTeleop(form){
     const receiver=selected.draft.resources.hc_teleop_config;
     if(!receiver){form.append(el('p','可根据现有运动通道创建 hc_teleop_recv 配置，随后在表单中调整。'),button('添加遥操作配置',()=>{const channels=selected.draft.resources.channel_config.channels.filter(x=>x.kind==='servo_p');if(!channels.length){toast('请先在“通道与工具”中添加 servo_p 通道和 FK 反馈话题',true);return;}selected.draft.resources.hc_teleop_config={schema_version:1,adapter:{robot_id:selected.robot_id,buttons_topic:'/hc_teleop_recv/buttons'},input:{mode:'udp',bind_host:'0.0.0.0',source_ip:'',pose_port:5005,discovery_port:5006,vr_data_topic:'/vrdata',publish_vrdata:true},control:{rate_hz:100,input_timeout:0.25,fk_timeout:0.25,enabled_on_start:false,resume_on_a:true,emergency_stop_topic:'/teleop/emergency_stop'},channels:channels.map((c,i)=>({id:(c.name||'channel_'+i).replace(/[^a-zA-Z0-9_]/g,'_'),controller:i===0?'right':'left',clutch_controller:i===0?'right':'left',target_pose_topic:c.endpoint,fk_pose_topic:c.fk_pose_topic||'',base_frame:c.base_frame,tool_frame:c.tip_frame,axis_mapping:[[0,0,-1],[-1,0,0],[0,1,0]],position_scale:0.8,max_displacement:0.8,filter_alpha:0.75,orientation_enabled:true}))};delete selected.draft.resources.teleop_config;markDirty();renderForm();}));return;}
@@ -225,7 +270,7 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
     const choice=el('select');choice.setAttribute('aria-label','从 ROS Graph 添加录制话题');choice.append(el('option','从当前 ROS Graph 选择话题'));for(const item of discoveredTopics){const option=el('option',item.topic);option.value=item.topic;choice.append(option);}choice.onchange=()=>{const item=discoveredTopics.find(t=>t.topic===choice.value);if(item&&!recording.subscriptions.some(t=>t.topic===item.topic)){recording.subscriptions.push({topic:item.topic,type:item.types[0],enabled:true,outputs:['record'],max_hz:0,event_max_hz:0});markDirty();renderForm();}};form.append(choice,button('添加自定义话题',()=>{recording.subscriptions.push({topic:'/custom/topic',type:'std_msgs/msg/String',enabled:true,outputs:['record'],max_hz:0,event_max_hz:0});markDirty();renderForm();}));
     form.append(el('p','此处保存机器人专属录制方案。在“话题录制”页载入并应用后，下一次录制使用该方案。','form-help'));
   }
-  const renderers={driver:renderDriver,joints:renderJoints,model:renderModel,motion:renderMotion,channels:renderChannels,teleop:renderTeleop,chassis:renderChassis,grippers:renderGrippers,cameras:renderCameras,recording:renderRecording};
+  const renderers={driver:renderDriver,joints:renderJoints,model:renderModel,motion:renderMotion,channels:renderChannels,poses:renderInitialPoses,teleop:renderTeleop,chassis:renderChassis,grippers:renderGrippers,cameras:renderCameras,recording:renderRecording};
   function renderForm(){if(!selected)return;const form=$('#robotForm');form.replaceChildren(el('h3',tabs.find(t=>t[0]===tab)[1]));renderers[tab](form);for(const t of $$('table',form)){const headers=$$('th',t).map(h=>h.textContent);$$('tbody tr',t).forEach((row,index)=>$$('td',row).forEach((cell,column)=>{const control=cell.querySelector('input,select');if(control&&!control.getAttribute('aria-label'))control.setAttribute('aria-label',`${headers[column]} · 第 ${index+1} 行`);}));}}
   function renderEditor(){
     $('#robotEmpty').classList.toggle('hidden',!!selected);$('#robotEditor').classList.toggle('hidden',!selected);if(!selected)return;

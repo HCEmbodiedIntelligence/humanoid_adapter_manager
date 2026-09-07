@@ -235,9 +235,132 @@ def validate_cameras(value):
     return result
 
 
+def validate_initial_poses(value, resources):
+    """Validate named MoveJ poses against the editable model and channel resources."""
+    if not isinstance(value, list) or len(value) > 32:
+        raise DeploymentError("初始姿态必须是列表，且最多 32 个")
+    if not isinstance(resources, dict):
+        raise DeploymentError("初始姿态缺少机器人资源")
+    try:
+        motion = resources["motion_params"]["humanoid_motion_control"]["ros__parameters"]
+        channels = resources["channel_config"]["channels"]
+    except (KeyError, TypeError) as error:
+        raise DeploymentError("初始姿态无法读取运动分组或通道配置") from error
+    if not isinstance(channels, list):
+        raise DeploymentError("初始姿态无法读取运动通道")
+    channel_map = {}
+    for channel in channels:
+        if isinstance(channel, dict) and isinstance(channel.get("name"), str):
+            channel_map[channel["name"]] = channel
+
+    result, identifiers = [], set()
+    allowed_pose_keys = {
+        "id", "name", "targets", "velocity_scale", "acceleration_scale",
+        "jerk_scale", "timeout_sec",
+    }
+    for raw in value:
+        if not isinstance(raw, dict) or set(raw) - allowed_pose_keys:
+            raise DeploymentError("每个初始姿态必须是有效对象且不能包含未知字段")
+        pose = copy.deepcopy(raw)
+        ident = pose.get("id", "")
+        if not isinstance(ident, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", ident):
+            raise DeploymentError("初始姿态 ID 需以小写字母开头，只允许小写字母、数字和下划线")
+        if ident in identifiers:
+            raise DeploymentError(f"初始姿态 ID 重复: {ident}")
+        identifiers.add(ident)
+        name = pose.get("name", "")
+        if not isinstance(name, str) or not name.strip() or len(name) > 100:
+            raise DeploymentError(f"{ident}: 初始姿态名称需为 1–100 个字符")
+        pose["name"] = name.strip()
+        defaults = {
+            "velocity_scale": 0.15,
+            "acceleration_scale": 0.15,
+            "jerk_scale": 0.15,
+            "timeout_sec": 60.0,
+        }
+        for key, default in defaults.items():
+            pose.setdefault(key, default)
+            number = pose[key]
+            upper = 600.0 if key == "timeout_sec" else 1.0
+            if (isinstance(number, bool) or not isinstance(number, (int, float)) or
+                    not math.isfinite(number) or not 0 < number <= upper):
+                unit = "0–600 秒（不含 0）" if key == "timeout_sec" else "0–1（不含 0）"
+                raise DeploymentError(f"{ident}.{key} 必须在 {unit}范围内")
+            pose[key] = float(number)
+
+        targets = pose.get("targets")
+        if not isinstance(targets, list) or not targets or len(targets) > 16:
+            raise DeploymentError(f"{ident}: 至少需要一个初始姿态目标，最多 16 个")
+        normalized_targets, used_channels, used_joints = [], set(), set()
+        for raw_target in targets:
+            if not isinstance(raw_target, dict) or set(raw_target) != {"channel", "positions_rad"}:
+                raise DeploymentError(f"{ident}: 姿态目标只能包含 channel 和 positions_rad")
+            channel_name = raw_target.get("channel", "")
+            channel = channel_map.get(channel_name)
+            if channel is None or channel.get("kind") != "move_j" or not channel.get("group"):
+                raise DeploymentError(f"{ident}: 通道 {channel_name} 不是带关节组的 MoveJ 通道")
+            if channel_name in used_channels:
+                raise DeploymentError(f"{ident}: MoveJ 通道重复: {channel_name}")
+            used_channels.add(channel_name)
+            group = channel["group"]
+            joints = motion.get(f"groups.{group}")
+            lower = motion.get(f"group_lower_limits.{group}")
+            upper = motion.get(f"group_upper_limits.{group}")
+            if not (isinstance(joints, list) and isinstance(lower, list) and isinstance(upper, list) and
+                    len(joints) == len(lower) == len(upper) and joints):
+                raise DeploymentError(f"{ident}: 通道 {channel_name} 的关节组或限位不完整")
+            overlap = used_joints.intersection(joints)
+            if overlap:
+                raise DeploymentError(f"{ident}: 多个目标包含相同关节: {', '.join(sorted(overlap))}")
+            used_joints.update(joints)
+            positions = raw_target.get("positions_rad")
+            if not isinstance(positions, list) or len(positions) != len(joints):
+                raise DeploymentError(f"{ident}: {group} 需要 {len(joints)} 个关节位置")
+            normalized_positions = []
+            for joint, position, low, high in zip(joints, positions, lower, upper):
+                if (isinstance(position, bool) or not isinstance(position, (int, float)) or
+                        not math.isfinite(position)):
+                    raise DeploymentError(f"{ident}.{joint}: 初始位置必须是有限数值")
+                if position < low or position > high:
+                    raise DeploymentError(f"{ident}.{joint}: {position} rad 超出限位 [{low}, {high}]")
+                normalized_positions.append(float(position))
+            normalized_targets.append({"channel": channel_name, "positions_rad": normalized_positions})
+        pose["targets"] = normalized_targets
+        result.append(pose)
+    return result
+
+
+def resolve_initial_pose(document, pose_id):
+    """Resolve a validated named pose to concrete MoveJ action endpoints."""
+    poses = validate_initial_poses(document.get("initial_poses", []), document.get("resources"))
+    pose = next((item for item in poses if item["id"] == pose_id), None)
+    if pose is None:
+        raise DeploymentError("初始姿态不存在")
+    resources = document["resources"]
+    motion = resources["motion_params"]["humanoid_motion_control"]["ros__parameters"]
+    channels = {item["name"]: item for item in resources["channel_config"]["channels"]}
+    goals = []
+    for target in pose["targets"]:
+        channel = channels[target["channel"]]
+        group = channel["group"]
+        goals.append({
+            "channel": channel["name"],
+            "endpoint": channel["endpoint"],
+            "group": group,
+            "joint_names": list(motion[f"groups.{group}"]),
+            "positions_rad": list(target["positions_rad"]),
+            "velocity_scale": pose["velocity_scale"],
+            "acceleration_scale": pose["acceleration_scale"],
+            "jerk_scale": pose["jerk_scale"],
+            "timeout_sec": pose["timeout_sec"],
+        })
+    return {**pose, "goals": goals}
+
+
 def normalize_document(document):
     value = copy.deepcopy(document)
     value.setdefault("cameras", [])
+    value.setdefault("initial_poses", [])
     return value
 
 
@@ -297,7 +420,7 @@ class ConfigurationManager:
         return [root / "hardware_drivers" / composition["plugins"]["hardware_driver"],
                 root / "robot_models" / composition["plugins"]["robot_model"], robot_path]
 
-    def _document(self, root, robot_id, recording=None, cameras=None):
+    def _document(self, root, robot_id, recording=None, cameras=None, initial_poses=None):
         driver, model, robot = self._components(root, robot_id)
         resources = {}
         for path in (driver, model):
@@ -308,8 +431,12 @@ class ConfigurationManager:
         if cameras is None:
             camera_path = robot / "cameras.yaml"
             cameras = (_yaml(camera_path) or {}).get("cameras", []) if camera_path.is_file() else []
+        if initial_poses is None:
+            pose_path = robot / "initial_poses.yaml"
+            initial_poses = (_yaml(pose_path) or {}).get("initial_poses", []) if pose_path.is_file() else []
         return {"name": _yaml(robot / "manifest.yaml")["name"], "resources": resources,
                 "cameras": validate_cameras(cameras),
+                "initial_poses": validate_initial_poses(initial_poses, resources),
                 "recording": recording or {"directory": "../runtime/topic_recordings", "subscriptions": [
                     {"topic": "/hc_teleop/joint_states", "type": "sensor_msgs/msg/JointState", "enabled": True, "outputs": ["record", "websocket"], "max_hz": 0, "event_max_hz": 20},
                     {"topic": "/diagnostics", "type": "diagnostic_msgs/msg/DiagnosticArray", "enabled": True, "outputs": ["record", "websocket"], "max_hz": 0, "event_max_hz": 5},
@@ -335,13 +462,14 @@ class ConfigurationManager:
             workspace = self._workspace(robot_id)
             if workspace.exists():
                 raise ConfigurationConflict("配置 ID 已存在，请使用其他 ID")
-            source_root, recording, cameras = self.plugin_root, None, None
+            source_root, recording, cameras, initial_poses = self.plugin_root, None, None, None
             if source_workspace:
                 source = self._read(source_workspace)
                 source_root = self._revision(source_workspace, source["latest"]) / "root"
                 source_robot = source_workspace
                 source_document = normalize_document(json.loads((source_root.parent / "document.json").read_text()))
                 recording, cameras = source_document["recording"], source_document["cameras"]
+                initial_poses = source_document["initial_poses"]
             if source_robot:
                 resolve_robot_deployment(source_root, _id(source_robot))
                 components = self._components(source_root, source_robot)
@@ -368,7 +496,7 @@ class ConfigurationManager:
                 _write_yaml(robot / "manifest.yaml", {"schema_version": 1, "artifact_type": "robot_composition", "robot_id": robot_id, "name": name.strip(), "plugins": {"hardware_driver": f"{robot_id}.driver", "robot_model": f"{robot_id}.model"}})
                 write_checksums(robot)
                 resolve_robot_deployment(root, robot_id)
-                document = self._document(root, robot_id, recording, cameras)
+                document = self._document(root, robot_id, recording, cameras, initial_poses)
                 revision = self._persist_revision(robot_id, root, document)
                 atomic_json(workspace / "index.json", {"robot_id": robot_id, "name": name.strip(), "latest": revision, "etag": uuid.uuid4().hex, "draft": document})
         return self.get(robot_id)
@@ -393,8 +521,8 @@ class ConfigurationManager:
         return result
 
     def draft(self, robot_id, document, etag):
-        if not isinstance(document, dict) or set(document) != {"name", "resources", "recording", "cameras"}:
-            raise DeploymentError("配置需包含 name、resources、cameras 和 recording")
+        if not isinstance(document, dict) or set(document) != {"name", "resources", "recording", "cameras", "initial_poses"}:
+            raise DeploymentError("配置需包含 name、resources、cameras、initial_poses 和 recording")
         try:
             encoded = json.dumps(document, ensure_ascii=False, allow_nan=False).encode()
         except (ValueError, TypeError) as error:
@@ -418,6 +546,7 @@ class ConfigurationManager:
         validate_values(document)
         validate_recording(document["recording"])
         cameras = validate_cameras(document["cameras"])
+        initial_poses = validate_initial_poses(document["initial_poses"], document["resources"])
         shutil.copytree(self._revision(robot_id, index["latest"]) / "root", root)
         driver, model, robot = self._components(root, robot_id)
         for path in (driver, model):
@@ -453,6 +582,7 @@ class ConfigurationManager:
         manifest["name"] = document["name"]
         _write_yaml(robot / "manifest.yaml", manifest)
         _write_yaml(robot / "cameras.yaml", {"schema_version": 1, "cameras": cameras})
+        _write_yaml(robot / "initial_poses.yaml", {"schema_version": 1, "initial_poses": initial_poses})
         write_checksums(robot)
         resolve_robot_deployment(root, robot_id)
 
@@ -535,6 +665,7 @@ class ConfigurationManager:
             document = normalize_document(json.loads((folder / "input/workspace.json").read_text()))
             validate_recording(document["recording"])
             validate_cameras(document["cameras"])
+            validate_initial_poses(document["initial_poses"], document["resources"])
             root = folder / "root"
             for filename in ("driver", "model", "composition"):
                 deploy_archive(folder / "input" / f"{filename}.zip", root)
@@ -547,6 +678,7 @@ class ConfigurationManager:
             # only the independent recording plan is taken from workspace.json.
             result["draft"]["recording"] = document["recording"]
             result["draft"]["cameras"] = document["cameras"]
+            result["draft"]["initial_poses"] = document["initial_poses"]
             result = self.draft(robot_id, result["draft"], result["etag"])
             return self.validate(robot_id, result["etag"], save=True)
 

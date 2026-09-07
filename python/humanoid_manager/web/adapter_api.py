@@ -9,6 +9,10 @@ import tempfile
 
 from aiohttp import web
 
+from ..configuration import resolve_initial_pose
+from ..deployment import DeploymentError
+from .motion_command import MotionCommandError, execute_move_j_pose
+
 
 class AdapterClient:
     def __init__(self, config, config_dir):
@@ -48,7 +52,9 @@ class AdapterClient:
 
 def register_adapter_routes(app, store, runtime):
     client = AdapterClient(runtime.config.get("adapter_manager", {}), store.path.parent)
+    runtime.adapter_client = client
     operation_lock = asyncio.Lock()
+    motion_lock = asyncio.Lock()
 
     def require_stopped():
         if getattr(runtime, 'capture', None) and runtime.capture.busy():
@@ -132,10 +138,51 @@ def register_adapter_routes(app, store, runtime):
             await response.write_eof()
             return response
 
+    async def execute_pose(request):
+        robot_id = request.match_info["robot_id"]
+        pose_id = request.match_info["pose_id"]
+        async with motion_lock:
+            detail = await client.call("get", robot_id=robot_id)
+            deployed = detail.get("deployed")
+            if not deployed or not deployed.get("revision") or deployed.get("revision") != detail.get("latest"):
+                raise web.HTTPConflict(text="请先校验、保存并应用包含该初始姿态的机器人版本")
+            platform = runtime.ros.platform_status() if runtime.ros else {}
+            current = platform.get("configuration")
+            if not current or not current.get("fresh"):
+                raise web.HTTPConflict(text="没有检测到当前运行机器人的新鲜配置状态")
+            identity = current.get("data", {})
+            if identity.get("robot_id") != robot_id or identity.get("revision") != detail.get("latest"):
+                raise web.HTTPConflict(text="网页所选机器人版本与当前运行版本不一致，请启动已部署版本")
+            if identity.get("state") != "observed" or identity.get("missing_nodes"):
+                raise web.HTTPConflict(text="机器人驱动或运动服务尚未全部就绪")
+            teleop = platform.get("teleop")
+            if teleop and teleop.get("fresh") and teleop.get("data", {}).get("enabled"):
+                raise web.HTTPConflict(text="请先在遥操作端停止使能，再执行初始姿态")
+            if runtime.player and runtime.player.status().get("is_active"):
+                raise web.HTTPConflict(text="正在回放数据，请停止回放后再执行初始姿态")
+            try:
+                pose = resolve_initial_pose(detail["saved"], pose_id)
+                results = await asyncio.to_thread(
+                    execute_move_j_pose, pose["goals"], runtime.config["ros"]["domain_id"]
+                )
+            except DeploymentError as error:
+                raise web.HTTPBadRequest(text=str(error)) from error
+            except MotionCommandError as error:
+                raise web.HTTPConflict(text=str(error)) from error
+            return web.json_response({
+                "ok": True,
+                "robot_id": robot_id,
+                "revision": detail["latest"],
+                "pose_id": pose["id"],
+                "pose_name": pose["name"],
+                "results": results,
+            })
+
     app.router.add_get("/api/adapters", catalog)
     app.router.add_post("/api/adapters/robots", create)
     app.router.add_post("/api/adapters/import", upload)
     app.router.add_get("/api/adapters/robots/{robot_id}", detail)
     app.router.add_get("/api/adapters/robots/{robot_id}/export", export)
+    app.router.add_post("/api/adapters/robots/{robot_id}/poses/{pose_id}/execute", execute_pose)
     app.router.add_post("/api/adapters/robots/{robot_id}/{operation}", action)
     return client

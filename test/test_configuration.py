@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from humanoid_manager.configuration import ConfigurationManager, ConfigurationConflict
+from humanoid_manager.configuration import ConfigurationManager, ConfigurationConflict, resolve_initial_pose
 from humanoid_manager.deployment import DeploymentError, deploy_archive, pack_directory, resolve_robot_deployment
 from humanoid_manager.runtime_state import configuration_identity, deployment_lock
 from test_deployment_plugins import _hardware_tree, _model_tree, _composition_tree
@@ -166,3 +166,39 @@ def test_multiple_realsense_require_unique_serial_numbers(manager):
     robot = manager.draft('lab', doc, robot['etag'])
     with pytest.raises(DeploymentError, match='序列号'):
         manager.validate('lab', robot['etag'])
+
+
+def test_initial_pose_is_versioned_resolved_and_limited(manager, tmp_path):
+    robot = create(manager)
+    document = copy.deepcopy(robot['draft'])
+    document['initial_poses'] = [{
+        'id': 'teleop_home',
+        'name': '遥操作初始姿态',
+        'velocity_scale': 0.2,
+        'acceleration_scale': 0.15,
+        'jerk_scale': 0.1,
+        'timeout_sec': 45,
+        'targets': [{'channel': 'arm_move_j', 'positions_rad': [0.25, -0.5]}],
+    }]
+    robot = manager.draft('lab', document, robot['etag'])
+    robot = manager.validate('lab', robot['etag'], save=True)
+    manager.apply('lab', robot['latest'], robot['etag'])
+    deployed = __import__('yaml').safe_load((manager.plugin_root / 'robots/lab/initial_poses.yaml').read_text())
+    assert deployed['initial_poses'][0]['targets'][0]['positions_rad'] == [0.25, -0.5]
+    resolved = resolve_initial_pose(robot['saved'], 'teleop_home')
+    assert resolved['goals'] == [{
+        'channel': 'arm_move_j', 'endpoint': '/motion/arm/move_j', 'group': 'arm',
+        'joint_names': ['joint1', 'joint2'], 'positions_rad': [0.25, -0.5],
+        'velocity_scale': 0.2, 'acceleration_scale': 0.15, 'jerk_scale': 0.1,
+        'timeout_sec': 45.0,
+    }]
+    exported = tmp_path / 'pose.zip'
+    manager.export('lab', robot['latest'], exported)
+    imported = manager.import_workspace(exported, 'pose_copy', '姿态副本')
+    assert imported['draft']['initial_poses'] == robot['saved']['initial_poses']
+
+    invalid = copy.deepcopy(imported['draft'])
+    invalid['initial_poses'][0]['targets'][0]['positions_rad'][0] = 1.5
+    imported = manager.draft('pose_copy', invalid, imported['etag'])
+    with pytest.raises(DeploymentError, match='超出限位'):
+        manager.validate('pose_copy', imported['etag'])

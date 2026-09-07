@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from aiohttp.test_utils import TestClient, TestServer
 from mcap.reader import make_reader
@@ -113,6 +114,42 @@ class ConfiguratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('robot_id', self.runtime.recording_metadata())
         response = await self.client.post('/api/ros/publish', json={}, headers={'Origin':'https://unrelated.example'})
         self.assertEqual(response.status, 403)
+
+    async def test_initial_pose_command_uses_deployed_version_without_touching_hardware(self):
+        document = {'initial_poses': [{'id':'teleop_home','name':'遥操作初始姿态',
+            'velocity_scale':.2,'acceleration_scale':.2,'jerk_scale':.1,'timeout_sec':30,
+            'targets':[{'channel':'arm_move_j','positions_rad':[0.0,0.25]}]}],
+            'resources': {
+                'motion_params': {'humanoid_motion_control': {'ros__parameters': {
+                    'groups.arm':['joint1','joint2'], 'group_lower_limits.arm':[-1.0,-1.0],
+                    'group_upper_limits.arm':[1.0,1.0]}}},
+                'channel_config': {'channels':[{'name':'arm_move_j','kind':'move_j',
+                    'endpoint':'/motion/arm/move_j','group':'arm','priority':50}]}}}
+        detail = {'robot_id':'lab','latest':'r-0123456789abcdef',
+            'deployed':{'revision':'r-0123456789abcdef'},'saved':document}
+        async def fake_call(operation, **arguments):
+            self.assertEqual(operation, 'get')
+            self.assertEqual(arguments['robot_id'], 'lab')
+            return detail
+        self.runtime.adapter_client.call = fake_call
+        self.runtime.ros.events['configuration'] = (time.monotonic(), {
+            'robot_id':'lab','revision':'r-0123456789abcdef','state':'observed','missing_nodes':[]})
+        completed = [{'channel':'arm_move_j','group':'arm','status_code':0}]
+        with patch('humanoid_manager.web.adapter_api.execute_move_j_pose', return_value=completed) as execute:
+            response = await self.client.post('/api/adapters/robots/lab/poses/teleop_home/execute', json={})
+        self.assertEqual(response.status, 200, await response.text())
+        payload = await response.json()
+        self.assertEqual(payload['pose_name'], '遥操作初始姿态')
+        goal = execute.call_args.args[0][0]
+        self.assertEqual(goal['endpoint'], '/motion/arm/move_j')
+        self.assertEqual(goal['joint_names'], ['joint1','joint2'])
+        self.assertEqual(goal['positions_rad'], [0.0,0.25])
+
+        self.runtime.ros.events['teleop'] = (time.monotonic(), {'enabled':True})
+        with patch('humanoid_manager.web.adapter_api.execute_move_j_pose') as execute:
+            blocked = await self.client.post('/api/adapters/robots/lab/poses/teleop_home/execute', json={})
+        self.assertEqual(blocked.status, 409)
+        execute.assert_not_called()
 
     async def test_recording_path_cannot_escape_and_duplicate_names_preserve_files(self):
         response = await self.client.post('/api/recording/start', json={'filename':'../escape', 'force':True})
