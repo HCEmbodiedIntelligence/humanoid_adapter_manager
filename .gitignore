@@ -26,3 +26,5 @@ TestResults.xml
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+.web-venv/

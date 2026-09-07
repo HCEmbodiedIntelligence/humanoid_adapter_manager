@@ -1,0 +1,61 @@
+{
+  "date": "2026-09-07",
+  "scope": "software_synthetic_and_local_ROS_mock_only",
+  "pytest": {
+    "passed": 110,
+    "seconds": 12.19,
+    "final_targeted_passed": 36,
+    "final_targeted_seconds": 4.14
+  },
+  "virtual_numeric_hour": {
+    "raw_samples": 360000,
+    "aligned_rows": 108000,
+    "max_interpolation_error": 9.094947017729282e-13,
+    "cache_peak_bytes": 20113,
+    "cache_final_items": 24,
+    "wall_seconds": 21.673,
+    "implementation_version": "historical v1.1 numerical-only benchmark"
+  },
+  "lerobot_reader": {
+    "version": "0.4.4",
+    "format": "v3.0",
+    "episodes": 2,
+    "frames": 5,
+    "episode_endpoints_read": 4,
+    "backend": "pyav"
+  },
+  "web": {
+    "desktop_width": 1440,
+    "mobile_width": 390,
+    "horizontal_overflow": 0,
+    "page_errors": [],
+    "v1_2_configuration": "passed"
+  },
+  "hardware_acceptance": {
+    "exposure_5ms": "not_run",
+    "rgbd_sync_1ms": "not_run",
+    "camera_grid_1ms": "not_run",
+    "one_hour_camera_storage_stability": "not_run",
+    "control_latency_baseline_comparison": "not_run"
+  },
+  "ros_v1_2": {
+    "independent_timestamp_adapter": true,
+    "tests_passed": 7,
+    "sdk_global_anchor_to_exposure_midpoint": "passed_synthetic",
+    "no_second_half_exposure_shift": "passed",
+    "uvc_counter_wrap": "passed",
+    "joint_header_preserved_without_robot_clock_mapping": "passed",
+    "ros_deadline_to_steady_and_jump": "passed",
+    "rgbd_pointcloud_record_export_pipeline": "passed_synthetic_ROS",
+    "pointcloud_bytes_and_depth_lineage": "passed",
+    "exposure_gain_frame_checks": "disabled_by_user_request"
+  },
+  "official_driver": {
+    "ros_version": "4.58.3",
+    "librealsense_version": "2.58.3",
+    "domain_id": 14,
+    "runtime": "started_waiting_for_device",
+    "hardware_status": "No RealSense devices were found",
+    "install_prefix": "~/.local/share/humanoid-camera/ros-overlay/opt/ros/humble"
+  }
+}

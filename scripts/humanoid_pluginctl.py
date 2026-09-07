@@ -4,10 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
 
-from humanoid_adapter_manager.deployment import (
+from humanoid_manager.deployment import (
     DEFAULT_PLUGIN_ROOT,
     DeploymentError,
     deploy_archive,
@@ -21,7 +22,8 @@ from humanoid_adapter_manager.deployment import (
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=DEFAULT_PLUGIN_ROOT)
+    parser.add_argument("--root", "--plugin-root", type=Path, default=DEFAULT_PLUGIN_ROOT)
+    parser.add_argument("--state-root", type=Path)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     validate = subparsers.add_parser("validate")
@@ -37,6 +39,7 @@ def _parser() -> argparse.ArgumentParser:
     deploy.add_argument("--skip-link-check", action="store_true")
 
     subparsers.add_parser("list")
+    subparsers.add_parser("web", help="Read one structured configuration request from stdin")
 
     resolve = subparsers.add_parser("resolve")
     resolve.add_argument("robot_id")
@@ -46,7 +49,14 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> int:
     arguments = _parser().parse_args()
     try:
-        if arguments.command == "validate":
+        if arguments.command == "web":
+            from humanoid_manager.configuration import ConfigurationManager
+            manager = ConfigurationManager(arguments.root, arguments.state_root or arguments.root / ".configurator")
+            payload = sys.stdin.read(16 * 1024 * 1024 + 1)
+            if len(payload.encode()) > 16 * 1024 * 1024:
+                raise DeploymentError("配置请求超过大小限制")
+            result = manager.dispatch(json.loads(payload))
+        elif arguments.command == "validate":
             manifest = validate_archive(
                 arguments.archive,
                 check_linkage=not arguments.skip_link_check,
@@ -69,16 +79,10 @@ def main() -> int:
                 )
             }
         elif arguments.command == "deploy":
-            result = {
-                "deployed": str(
-                    deploy_archive(
-                        arguments.archive,
-                        arguments.root,
-                        check_linkage=not arguments.skip_link_check,
-                    )
-                ),
-                "restart_required": True,
-            }
+            from humanoid_manager.runtime_state import deployment_lock
+            with deployment_lock(arguments.root):
+                result = {"deployed": str(deploy_archive(arguments.archive, arguments.root,
+                    check_linkage=not arguments.skip_link_check)), "restart_required": True}
         elif arguments.command == "list":
             result = list_deployed(arguments.root)
         else:
@@ -89,8 +93,8 @@ def main() -> int:
             result = deployment.as_dict()
         print(json_text(result))
         return 0
-    except (DeploymentError, OSError) as error:
-        print(json_text({"status": "error", "message": str(error)}), file=sys.stderr)
+    except (DeploymentError, OSError, ValueError, TypeError, KeyError) as error:
+        print(json_text({"status": "error", "message": str(error), "kind": type(error).__name__}), file=sys.stderr)
         return 2
 
 

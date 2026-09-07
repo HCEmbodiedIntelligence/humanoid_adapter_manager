@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>humanoid_adapter_manager</name>
+  <name>humanoid_manager</name>
   <version>0.1.0</version>
-  <description>No-build plugin deployment, validation, and robot-profile resolution.</description>
+  <description>Robot web configuration, status, MCAP recording, playback and dataset annotation.</description>
   <maintainer email="czy33114@gmail.com">czy</maintainer>
   <license>Proprietary</license>
 
@@ -10,6 +10,18 @@
   <buildtool_depend>ament_cmake_python</buildtool_depend>
 
   <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>python3-toml</exec_depend>
+  <exec_depend>hc_teleop_recv</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>realsense2_camera_msgs</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>rosidl_runtime_py</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>humanoid_driver_runtime</exec_depend>
+  <exec_depend>humanoid_motion_server</exec_depend>
 
   <test_depend>ament_cmake_pytest</test_depend>
 

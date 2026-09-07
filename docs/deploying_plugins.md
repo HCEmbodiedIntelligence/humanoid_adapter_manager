@@ -8,7 +8,7 @@
 2. `robot_model`：运动学 URDF、运动组/限制、通道和工具定义。
 
 `robot_composition` 是只引用插件 ID 的整机组合清单，不是功能插件，不包含代码或资源。
-`humanoid_adapter_manager` 只负责校验、部署和解析；`robot_bringup` 才负责启动进程。
+`humanoid_manager` 只负责校验、部署和解析；`robot_bringup` 才负责启动进程。
 
 目标机不编译或安装厂商 driver/description 源码包。模型插件不得配置 SDK execution driver；硬件
 I/O 始终由 `humanoid_driver_runtime` 独占。这里没有仿真启动逻辑。
@@ -105,6 +105,24 @@ resources:
 模型 SDK YAML 中禁止出现 `execution`。motion server 只使用 SDK 做运动计算，命令仍通过平台
 joint-command 通道交给 driver runtime。
 
+### HC 遥操作前端配置
+
+需要 HC PICO 遥操作时，在模型 resources 中声明：
+
+```yaml
+hc_teleop_config: resources/hc_teleop.yaml
+```
+
+配置随模型资源打包。`hc_teleop_recv` 只接收手柄、读取 motion server 的实测 FK，
+并生成 `PoseStamped` ServoP 目标；运动学和关节命令仍由 motion server 负责。
+管理器复用接收器的校验器，检查每个通道的目标 endpoint、FK topic、base_frame 和
+tool_frame 与模型 channels.yaml 中的 ServoP 定义一致，并检查旋转矩阵和数值范围。
+配置格式见 [`hc_teleop_recv/README.md`](../../hc_teleop_recv/README.md)。
+
+`teleop_config` 不再是有效的模型资源；遥操作统一使用 `hc_teleop_config` 和
+`hc_teleop_recv`。`resolve` 返回配置的绝对路径，启动器根据资源键启动接收端。
+切换机型需要停止旧进程，再按新的 robot_id 启动；部署不会自动热切换正在运行的接收器。
+
 ## robot_composition 组合清单
 
 组合清单只完成 ID 绑定：
@@ -130,17 +148,17 @@ plugins:
 开发机：
 
 ```bash
-ros2 run humanoid_adapter_manager humanoid_pluginctl.py pack STAGED_DIR output.zip
-ros2 run humanoid_adapter_manager humanoid_pluginctl.py validate output.zip
+ros2 run humanoid_manager humanoid_pluginctl.py pack STAGED_DIR output.zip
+ros2 run humanoid_manager humanoid_pluginctl.py validate output.zip
 ```
 
 目标机按依赖顺序部署：
 
 ```bash
-ros2 run humanoid_adapter_manager humanoid_pluginctl.py deploy driver.zip
-ros2 run humanoid_adapter_manager humanoid_pluginctl.py deploy model.zip
-ros2 run humanoid_adapter_manager humanoid_pluginctl.py deploy composition.zip
-ros2 run humanoid_adapter_manager humanoid_pluginctl.py resolve my_robot
+ros2 run humanoid_manager humanoid_pluginctl.py deploy driver.zip
+ros2 run humanoid_manager humanoid_pluginctl.py deploy model.zip
+ros2 run humanoid_manager humanoid_pluginctl.py deploy composition.zip
+ros2 run humanoid_manager humanoid_pluginctl.py resolve my_robot
 
 ros2 launch robot_bringup registered_robot.launch.py robot_id:=my_robot
 ```

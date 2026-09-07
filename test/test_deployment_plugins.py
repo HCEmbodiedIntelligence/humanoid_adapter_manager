@@ -8,7 +8,7 @@ import zipfile
 import pytest
 import yaml
 
-from humanoid_adapter_manager.deployment import (
+from humanoid_manager.deployment import (
     DeploymentError,
     deploy_archive,
     list_deployed,
@@ -296,3 +296,59 @@ def test_archive_path_traversal_is_rejected(tmp_path: Path) -> None:
         output.writestr("../outside", "unsafe")
     with pytest.raises(DeploymentError, match="unsafe path"):
         validate_archive(archive)
+
+
+def _hc_model_tree(root: Path) -> Path:
+    root = _model_tree(root)
+    manifest = yaml.safe_load((root / "manifest.yaml").read_text())
+    manifest["resources"]["hc_teleop_config"] = "resources/hc_teleop.yaml"
+    _write_yaml(root / "manifest.yaml", manifest)
+    _write_yaml(root / "resources/channels.yaml", {"channels": [{
+        "name": "teleop_arm", "kind": "servo_p", "endpoint": "/teleop/arm/servo_p",
+        "priority": 50, "group": "arm", "base_frame": "base", "tip_frame": "link2",
+        "fk_pose_topic": "/teleop/arm/fk_pose",
+    }]})
+    _write_yaml(root / "resources/hc_teleop.yaml", {"schema_version": 1, "channels": [{
+        "id": "arm", "controller": "right", "target_pose_topic": "/teleop/arm/servo_p",
+        "fk_pose_topic": "/teleop/arm/fk_pose", "base_frame": "base", "tool_frame": "link2",
+        "axis_mapping": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+    }]})
+    return root
+
+
+def test_hc_receiver_resource_packs_deploys_and_resolves(tmp_path):
+    trees = [_hardware_tree(tmp_path / "hardware"), _hc_model_tree(tmp_path / "model"),
+             _composition_tree(tmp_path / "composition")]
+    for index, tree in enumerate(trees):
+        archive = tmp_path / f"{index}.zip"
+        pack_directory(tree, archive)
+        deploy_archive(archive, tmp_path / "deployed", check_linkage=False)
+    resolved = resolve_robot_deployment(tmp_path / "deployed", "test_robot")
+    assert resolved.resources["hc_teleop_config"].is_absolute()
+    assert resolved.resources["hc_teleop_config"].is_file()
+
+
+@pytest.mark.parametrize("key,value", [
+    ("base_frame", "link1"), ("tool_frame", "link1"),
+    ("fk_pose_topic", "/wrong/fk"), ("target_pose_topic", "/wrong/servo_p"),
+    ("axis_mapping", [[1, 0, 0], [0, 1, 0], [0, 0, -1]]),
+])
+def test_hc_receiver_rejects_incompatible_motion_contract(tmp_path, key, value):
+    root = _hc_model_tree(tmp_path / "model")
+    path = root / "resources/hc_teleop.yaml"
+    config = yaml.safe_load(path.read_text())
+    config["channels"][0][key] = value
+    _write_yaml(path, config)
+    with pytest.raises(DeploymentError, match="invalid hc_teleop_config"):
+        pack_directory(root, tmp_path / "bad-model.zip")
+
+
+def test_legacy_receiver_resource_is_rejected(tmp_path):
+    root = _hc_model_tree(tmp_path / "model")
+    path = root / "manifest.yaml"
+    manifest = yaml.safe_load(path.read_text())
+    manifest["resources"]["teleop_config"] = "resources/old.toml"
+    (root / "resources/old.toml").write_text("# legacy receiver config\n")
+    _write_yaml(path, manifest)
+    with pytest.raises(DeploymentError, match="unknown keys"):
+        pack_directory(root, tmp_path / "two-receivers.zip")

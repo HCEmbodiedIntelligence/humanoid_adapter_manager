@@ -47,7 +47,7 @@ _MODEL_RESOURCE_REQUIRED = {
     "tool_config",
     "urdf",
 }
-_MODEL_RESOURCE_OPTIONAL = {"teleop_config"}
+_MODEL_RESOURCE_OPTIONAL = {"hc_teleop_config"}
 
 
 class DeploymentError(RuntimeError):
@@ -691,6 +691,15 @@ def validate_model_tree(root: Path) -> dict[str, Any]:
             if kind not in cartesian_kinds or not group_name or fk_topic in fk_topics:
                 raise DeploymentError("FK topics require a unique Cartesian channel with a group")
             fk_topics.add(fk_topic)
+
+    if "hc_teleop_config" in resources:
+        from hc_teleop_recv.config import ConfigError, load_config, validate_motion_channels
+
+        try:
+            receiver = load_config(resources["hc_teleop_config"])
+            validate_motion_channels(receiver, channels_mapping["channels"])
+        except ConfigError as error:
+            raise DeploymentError(f"invalid hc_teleop_config: {error}") from error
 
     result = dict(manifest)
     result["_root"] = root

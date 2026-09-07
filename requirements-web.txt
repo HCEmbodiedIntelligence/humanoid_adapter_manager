@@ -1,0 +1,11 @@
+# Optional dashboard dependencies; the deployment CLI remains ROS-free.
+aiohttp>=3.8,<4
+PyYAML>=5.4
+mcap==1.4.0
+numpy>=1.24,<2
+toml>=0.10,<1
+
+# Pinned codecs and table format for v1.1 continuous sessions.
+av==16.1.0
+pyarrow==20.0.0
+Pillow>=9,<13
