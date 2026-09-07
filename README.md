@@ -54,12 +54,11 @@ ROS_DOMAIN_ID=14 ros2 launch humanoid_manager managed_robot.launch.py \
 
 此入口启动驱动、运动服务和 `hc_teleop_recv`，持有部署读锁并发布 `/humanoid/configuration_state`。其报告的配置指纹/版本会写入录制元数据。可以通过 `start_driver:=false`、`start_motion:=false` 或 `start_teleop:=false` 分别关闭组件。启用遥操作时必须有 `hc_teleop_config`，不会启动旧接收端。
 
-尚未导入插件时，可在网页“导入配置包”中依次导入驱动、模型、组合 ZIP。CLI 仍可用于部署：
+尚未导入插件时，在网页“导入配置包”中导入驱动和模型 ZIP，然后在“机器人配置”中选择两者创建机器人。机器人组合由管理器内部生成，不需要准备或编辑 composition ZIP。CLI 仍可用于导入底层插件：
 
 ```bash
 ros2 run humanoid_manager humanoid_pluginctl.py --root "$HOME/.local/share/humanoid-plugins" deploy driver.zip
 ros2 run humanoid_manager humanoid_pluginctl.py --root "$HOME/.local/share/humanoid-plugins" deploy model.zip
-ros2 run humanoid_manager humanoid_pluginctl.py --root "$HOME/.local/share/humanoid-plugins" deploy composition.zip
 ```
 
 ## 按钮标记与数据保存

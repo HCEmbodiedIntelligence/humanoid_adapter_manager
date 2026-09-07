@@ -152,18 +152,14 @@ ros2 run humanoid_manager humanoid_pluginctl.py pack STAGED_DIR output.zip
 ros2 run humanoid_manager humanoid_pluginctl.py validate output.zip
 ```
 
-目标机按依赖顺序部署：
+目标机先部署驱动和模型插件：
 
 ```bash
 ros2 run humanoid_manager humanoid_pluginctl.py deploy driver.zip
 ros2 run humanoid_manager humanoid_pluginctl.py deploy model.zip
-ros2 run humanoid_manager humanoid_pluginctl.py deploy composition.zip
-ros2 run humanoid_manager humanoid_pluginctl.py resolve my_robot
-
-ros2 launch robot_bringup registered_robot.launch.py robot_id:=my_robot
 ```
 
-CLI 输出 JSON。Web 后端应使用参数数组调用 CLI，并在部署前停止正在使用目标插件的进程。
+随后在网页“机器人配置”中选择驱动与模型，填写机器人 ID 和名称。管理器会创建独立配置副本，并在保存、应用时生成和部署内部组合清单；用户不需要生成、编辑或导入 composition ZIP。CLI 输出 JSON，部署前需要停止正在使用目标插件的进程。
 
 ## OpenArmX 参考产物
 
@@ -176,8 +172,6 @@ python3 src/openarmx_driver/tools/create_deployment_bundle.py \
 python3 src/openarmx_description/tools/create_deployment_bundle.py \
   deploy_artifacts/openarmx-v10-model.zip
 
-python3 src/openarmx_description/tools/create_composition_bundle.py \
-  deploy_artifacts/openarmx-v10-composition.zip
 ```
 
-三个产物按上述顺序部署。目标机不安装 `openarmx_driver` 或 `openarmx_description` 源码包。
+导入 OpenArmX 驱动与模型两个产物后，直接在机器人页面新建配置。目标机不安装 `openarmx_driver` 或 `openarmx_description` 源码包。

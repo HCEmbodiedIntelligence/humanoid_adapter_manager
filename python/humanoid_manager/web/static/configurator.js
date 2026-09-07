@@ -32,9 +32,10 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
     orientation_enabled:'启用姿态映射',filter_alpha:'滤波系数（0–1）',position_deadband:'位置死区（m）',orientation_deadband:'姿态死区（rad）',workspace:'工作空间（m）',min:'最小 XYZ',max:'最大 XYZ',
     directory:'录制目录',topic:'话题',type:'消息类型',enabled:'启用',max_hz:'限频（Hz，0 不限）',event_max_hz:'网页刷新上限（Hz）',
     backend:'相机接入方式',device_type:'相机型号',serial_no:'设备序列号',namespace:'ROS 命名空间',camera_name:'驱动节点名',width:'图像宽度',height:'图像高度',fps:'采集频率（Hz）',
-    color_format:'彩色格式',depth_format:'深度格式',pointcloud:'发布点云',align_depth:'深度空间对齐到彩色',normalize_timestamps:'转换曝光中点时间戳',required:'训练必需来源',
-    depth_auto_exposure:'深度 / D405 共享模块自动曝光',depth_exposure_us:'深度手动曝光（μs）',depth_gain:'深度手动增益',depth_auto_exposure_limit_us:'深度自动曝光上限（μs）',depth_auto_gain_limit:'深度自动增益上限',
-    color_auto_exposure:'D435 彩色自动曝光',color_exposure_us:'D435 彩色手动曝光（μs）',color_gain:'D435 彩色手动增益',rgbd_topic:'标准化 RGB-D 话题',metadata_topic:'来源元数据话题',pointcloud_topic:'标准化点云话题',pointcloud_metadata_topic:'点云元数据话题',
+    color_format:'彩色格式',depth_format:'深度格式',pointcloud:'发布点云',align_depth:'深度空间对齐到彩色',timestamp_alignment:'将曝光中点对齐到 ROS 2 时间',sync_rgb_depth:'启用 RGB-D 成组同步',required:'训练必需来源',
+    max_actual_exposure_us:'曝光要求上限（μs）',rgbd_max_midpoint_skew_ms:'RGB-D 曝光中点差上限（ms）',camera_max_error_ms:'图像到数据网格偏差上限（ms）',
+    depth_auto_exposure:'深度 / 共享成像模块自动曝光',depth_exposure_us:'深度手动曝光（μs）',depth_gain:'深度手动增益 / 亮度补偿',depth_auto_exposure_limit_us:'深度自动曝光上限（μs）',depth_auto_gain_limit:'深度自动增益 / 亮度补偿上限',
+    color_auto_exposure:'RGB 自动曝光',color_exposure_us:'RGB 手动曝光（μs）',color_gain:'RGB 手动增益 / 亮度补偿',rgbd_topic:'标准化 RGB-D 话题',metadata_topic:'来源元数据话题',pointcloud_topic:'标准化点云话题',pointcloud_metadata_topic:'点云元数据话题',
   };
   const enums = {message_type:['twist','twist_stamped'],command_type:['joint_state','float64','gripper_action'],feedback_type:['joint_state','float64'],position_unit:['m','rad'],input_axis:['trigger','grip'],enable_button:['primary_axis_click','grip_button','trigger_button','primary','secondary','menu','secondary_axis_click'],forward_axis:['primary_y','primary_x','secondary_y','secondary_x','none'],lateral_axis:['none','primary_x','primary_y','secondary_x','secondary_y'],turn_axis:['primary_x','primary_y','secondary_x','secondary_y','none'],kind:['move_j','move_l','move_p','servo_j','servo_p'],controller:['left','right','head'],clutch_controller:['left','right'],mode:['udp','vrdata']};
   const el = (tag, text, cls) => {const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;};
@@ -171,7 +172,7 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
   }
 
   function cameraTemplate(id,device='d405'){
-    return {id,enabled:true,backend:'realsense',device_type:device,serial_no:'',namespace:id,camera_name:'camera',width:640,height:480,fps:30,color_format:'RGB8',depth_format:'Z16',pointcloud:false,align_depth:false,normalize_timestamps:true,required:true,depth_auto_exposure:true,depth_exposure_us:4500,depth_gain:64,depth_auto_exposure_limit_us:4500,depth_auto_gain_limit:64,color_auto_exposure:false,color_exposure_us:4500,color_gain:64,parameters:{}};
+    return {id,enabled:true,backend:'realsense',device_type:device,serial_no:'',namespace:id,camera_name:'camera',width:640,height:480,fps:30,color_format:'RGB8',depth_format:'Z16',pointcloud:false,align_depth:false,sync_rgb_depth:true,timestamp_alignment:true,max_actual_exposure_us:5000,rgbd_max_midpoint_skew_ms:1,camera_max_error_ms:1,required:true,depth_auto_exposure:true,depth_exposure_us:4500,depth_gain:64,depth_auto_exposure_limit_us:4500,depth_auto_gain_limit:64,color_auto_exposure:false,color_exposure_us:4500,color_gain:64,parameters:{}};
   }
   function nextCameraId(prefix='camera'){let n=1;const cameras=selected.draft.cameras||(selected.draft.cameras=[]);while(cameras.some(c=>c.id===prefix+n))n++;return prefix+n;}
   async function syncCamerasToCapture(){
@@ -181,37 +182,40 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
     const active=selected.draft.cameras.filter(c=>c.enabled);
     for(const camera of active){
       const base=camera.backend==='ros_topics'?'':`/${camera.namespace}/normalized`;
-      cfg.sources[camera.id]={kind:'rgbd',transport:'ros_rgbd',topic:camera.rgbd_topic||base+'/rgbd',metadata_topic:camera.metadata_topic||base+'/metadata',fps:camera.fps||30,exposure:{max_actual_us:5000,auto:camera.device_type==='d405'?camera.depth_auto_exposure:camera.color_auto_exposure,auto_exposure_limit_us:camera.depth_auto_exposure_limit_us||4500,auto_gain_limit:camera.depth_auto_gain_limit||64},sync_mode:camera.device_type==='d405'?'shared_stereo_free_run':'driver_frameset_free_run',trigger_origin:null,temporal_fusion:false,required:camera.required!==false,managed_robot_camera:true,camera_model:camera.device_type||camera.backend};
+      cfg.sources[camera.id]={kind:'rgbd',transport:'ros_rgbd',topic:camera.rgbd_topic||base+'/rgbd',metadata_topic:camera.metadata_topic||base+'/metadata',fps:camera.fps||30,exposure:{max_actual_us:camera.max_actual_exposure_us||5000,auto:camera.device_type==='d405'?camera.depth_auto_exposure:camera.color_auto_exposure,auto_exposure_limit_us:camera.depth_auto_exposure_limit_us||4500,auto_gain_limit:camera.depth_auto_gain_limit||64},sync_mode:camera.sync_rgb_depth===false?'unsynchronized':String(camera.device_type).toLowerCase()==='d405'?'shared_stereo_free_run':'driver_frameset_free_run',trigger_origin:null,temporal_fusion:false,required:camera.required!==false,managed_robot_camera:true,camera_model:camera.device_type||camera.backend,serial_no:camera.serial_no||'',timestamp_alignment:camera.timestamp_alignment!==false};
       if(camera.pointcloud){cfg.sources[camera.id+'_cloud']={kind:'pointcloud',transport:'ros_pointcloud',topic:camera.pointcloud_topic||base+'/points',metadata_topic:camera.pointcloud_metadata_topic||base+'/points_metadata',camera_source_id:camera.id,required:false,persist:true,managed_robot_camera:true};}
     }
     const primary=active.find(c=>c.required!==false);cfg.alignment.primary_camera=primary?primary.id:'';
+    const required=active.filter(c=>c.required!==false);
+    if(required.length){cfg.alignment.rgbd_max_midpoint_skew_ms=Math.min(...required.map(c=>c.rgbd_max_midpoint_skew_ms||1));cfg.alignment.camera_max_error_ms=Math.min(...required.map(c=>c.camera_max_error_ms||1));}
     await api('/api/capture/config',{method:'POST',body:JSON.stringify({config:cfg,etag:capture.etag})});
     notify(`已将 ${active.length} 台相机同步到连续采集方案`);
   }
   function renderCameras(form){
     const cameras=selected.draft.cameras||(selected.draft.cameras=[]);
-    form.append(el('p','每个机器人版本保存自己的相机列表。RealSense 由独立 humanoid_camera launch 启动；ROS 话题相机由外部驱动发布标准化消息。管理器不回读曝光/增益，也不逐帧检查。','form-help'));
+    form.append(el('p','按机器人逐台填写相机型号和序列号。所有 RGB-D 相机使用同一组要求：曝光与增益补偿、RGB-D 成组同步、曝光中点映射到 ROS 2 时间。RealSense 由独立 humanoid_camera launch 启动；其他相机由各自 ROS 驱动实现同一输入契约。','form-help'));
     const tools=el('div',undefined,'button-row');
-    tools.append(button('添加 D405',()=>{const id=nextCameraId();cameras.push(cameraTemplate(id,'d405'));markDirty();renderForm();},'primary'),button('添加 D435',()=>{const id=nextCameraId();cameras.push(cameraTemplate(id,'d435'));markDirty();renderForm();}),button('添加 ROS 话题相机',()=>{const id=nextCameraId();cameras.push({id,enabled:true,backend:'ros_topics',required:true,pointcloud:false,rgbd_topic:`/${id}/normalized/rgbd`,metadata_topic:`/${id}/normalized/metadata`,pointcloud_topic:`/${id}/normalized/points`,pointcloud_metadata_topic:`/${id}/normalized/points_metadata`,fps:30});markDirty();renderForm();}),button('载入 2×D405 + D435 模板',()=>{if(cameras.length&&!confirm('这会替换当前相机列表，是否继续？'))return;cameras.splice(0,cameras.length,{...cameraTemplate('front','d405'),pointcloud:true},cameraTemplate('left','d405'),cameraTemplate('right','d435'));markDirty();renderForm();}),button('同步到连续采集方案',()=>operation(syncCamerasToCapture)));
+    tools.append(button('添加 RealSense 相机',()=>{const id=nextCameraId();cameras.push(cameraTemplate(id,'d405'));markDirty();renderForm();},'primary'),button('添加其他 ROS 2 相机',()=>{const id=nextCameraId();cameras.push({...cameraTemplate(id,'custom_rgbd'),backend:'ros_topics',rgbd_topic:`/${id}/normalized/rgbd`,metadata_topic:`/${id}/normalized/metadata`,pointcloud_topic:`/${id}/normalized/points`,pointcloud_metadata_topic:`/${id}/normalized/points_metadata`});markDirty();renderForm();}),button('同步到连续采集方案',()=>operation(syncCamerasToCapture)));
     form.append(tools);
     if(!cameras.length)form.append(el('p','尚未配置相机。可按机器人实际设备添加任意数量。'));
     cameras.forEach((camera,index)=>{
       const field=el('fieldset'),heading=el('div',undefined,'row-heading');heading.append(el('h4',camera.id||`相机 ${index+1}`),button('移除相机',()=>{cameras.splice(index,1);markDirty();renderForm();}));field.append(heading);
       const grid=el('div',undefined,'parameter-grid');field.append(grid);
       const add=(key,options=null)=>grid.append(scalar(key,camera[key],value=>{const old=key==='id'?camera.id:null;camera[key]=value;if(key==='id'&&camera.namespace===old)camera.namespace=value;if(key==='backend'||key==='device_type')renderForm();},{options}));
-      add('id');add('enabled');add('backend',['realsense','ros_topics']);add('required');add('pointcloud');add('fps');
+      add('id');add('enabled');add('backend',['realsense','ros_topics']);add('device_type');add('serial_no');add('required');add('pointcloud');add('fps');add('sync_rgb_depth');add('timestamp_alignment');add('max_actual_exposure_us');add('rgbd_max_midpoint_skew_ms');add('camera_max_error_ms');
       if(camera.backend==='ros_topics'){
         for(const key of ['rgbd_topic','metadata_topic'])add(key);
         if(camera.pointcloud)for(const key of ['pointcloud_topic','pointcloud_metadata_topic'])add(key);
       }else{
-        add('device_type');add('serial_no');add('namespace');add('camera_name');add('width');add('height');add('color_format');add('depth_format');add('align_depth');add('normalize_timestamps');
+        add('namespace');add('camera_name');add('width');add('height');add('color_format');add('depth_format');add('align_depth');
         add('depth_auto_exposure');if(camera.depth_auto_exposure){add('depth_auto_exposure_limit_us');add('depth_auto_gain_limit');}else{add('depth_exposure_us');add('depth_gain');}
-        if(String(camera.device_type).toLowerCase()!=='d405'){add('color_auto_exposure');if(camera.color_auto_exposure)field.append(el('p','当前配置不会限制 D435 彩色自动曝光上限；需要 5 ms 配置上限时请关闭彩色自动曝光并使用 4500 μs 手动值。','notice error'));else{add('color_exposure_us');add('color_gain');}}
+        if(String(camera.device_type).toLowerCase()==='d405')field.append(el('p','D405 的 RGB 与深度共享 depth_module；上面的曝光和增益补偿设置同时作用于两路。','form-help'));
+        else{add('color_auto_exposure');if(camera.color_auto_exposure)field.append(el('p','当前官方配置未给 RGB 自动曝光设置 5 ms 上限；需要严格上限时使用不超过 5000 μs 的手动曝光。','notice error'));else{add('color_exposure_us');add('color_gain');}}
         const details=el('details'),summary=el('summary','高级官方驱动参数'),area=el('textarea');area.rows=5;area.value=JSON.stringify(camera.parameters||{},null,2);area.onchange=()=>{try{camera.parameters=JSON.parse(area.value);area.setCustomValidity('');markDirty();}catch(_){area.setCustomValidity('请输入 JSON 对象');area.reportValidity();}};details.append(summary,area);field.append(details);
       }
       form.append(field);
     });
-    form.append(el('p','同时启用多台 RealSense 时必须填写各自唯一序列号。保存并应用机器人版本后，managed_robot.launch.py 默认启动这些独立相机节点；也可传 start_cameras:=false。','form-help'));
+    form.append(el('p','同时启用多台 RealSense 时必须填写各自唯一序列号。enable_sync 负责官方驱动的成组发布；物理同步能力仍由具体型号决定。管理器不回读曝光/增益，也不逐帧检查。保存并应用机器人版本后，managed_robot.launch.py 默认启动独立相机节点。','form-help'));
   }
   function updatePeripheralState(data){const event=data?.platform?.teleop;const identity=event?.data?.configuration?.robot_id;const running=event?.fresh&&(!identity||identity===selected?.robot_id);const base=event?.data?.chassis;setText('#chassisRuntimeState',running&&base?`运行状态：${base.state} · ${base.reason||''} · ${base.command_topic||''}`:'当前配置没有新鲜的接收端状态，保存后由接收端加载');for(const node of $$('[data-gripper-state]')){const g=event?.data?.grippers?.[node.dataset.gripperState];node.textContent=running&&g?`运行状态：${g.state} · ${g.reason||''} · 反馈 ${g.feedback??'—'} / 目标 ${g.target??'—'} ${g.position_unit||''}`:'当前夹爪接口尚未接入';}}
   function renderRecording(form){

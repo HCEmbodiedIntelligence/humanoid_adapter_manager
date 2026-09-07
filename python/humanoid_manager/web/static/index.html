@@ -13,7 +13,7 @@
       <div class="workspace-layout">
         <aside class="robot-list" aria-label="机器人列表" id="managedRobots"></aside>
         <div class="workspace-content">
-          <div id="robotEmpty" class="empty-workspace"><span class="empty-symbol">↳</span><h2>从一份机器人配置开始</h2><p>可从已部署机器人创建，也可选择驱动与模型插件组成新机器人。</p><button id="emptyCreateRobot" class="primary">新建机器人配置</button></div>
+          <div id="robotEmpty" class="empty-workspace"><span class="empty-symbol">↳</span><h2>创建机器人配置</h2><p>选择已导入的驱动和模型，随后在机器人页面配置关节、相机、底盘、夹爪与录制方案。</p><button id="emptyCreateRobot" class="primary">新建机器人配置</button></div>
           <div id="robotEditor" class="hidden">
             <div class="revision-track"><span>编辑草稿 <b id="robotDraftState">已保存</b></span><span>已保存版本 <b id="robotSavedRevision">—</b></span><span>已部署版本 <b id="robotDeployedRevision">—</b></span></div>
             <div class="editor-actions"><label>机器人名称<input id="managedRobotName" maxlength="100"></label><div class="button-row"><button id="saveRobotDraft">保存草稿</button><button id="validateRobot">校验配置</button><button class="primary" id="saveRobotVersion">保存新版本</button><button id="applyRobot">应用已保存版本</button></div></div>
@@ -49,14 +49,14 @@
 <div class="config-actions"><p>保存保留配置；应用更新运行组件。录制期间可保存，停止后再应用。</p><div class="button-row"><button id="saveConfig" class="primary">保存配置</button><button id="applyConfig">应用已保存配置</button><button id="reloadSettings">重新读取</button></div></div></article><details class="panel changes-panel"><summary>配置历史</summary><div id="settingsHistory" class="history-list"></div></details></section>
 <dialog id="managedCreateDialog"><form id="managedCreateForm"><div class="dialog-title"><h2>新建机器人配置</h2><button type="button" data-close-dialog="managedCreateDialog" aria-label="关闭">×</button></div>
       <div class="form-grid"><label>配置 ID<input name="robot_id" required pattern="[a-z0-9][a-z0-9_.-]{0,63}" placeholder="例如 robot_lab"></label><label>显示名称<input name="name" required placeholder="机器人配置"></label></div>
-      <label>创建方式<select id="managedCreateSource"><option value="deployed">从已部署机器人创建</option><option value="workspace">复制已有配置的已保存版本</option><option value="plugins">选择驱动和模型插件</option></select></label>
-      <label id="managedSourceRobotLabel">来源机器人<select id="managedSourceRobot"></select></label>
-      <div class="form-grid hidden" id="managedPluginChoices"><label>驱动插件<select id="managedDriverChoice"></select></label><label>模型插件<select id="managedModelChoice"></select></label></div>
-      <p class="form-help">新配置有独立的参数副本，修改后不会影响来源机器人。</p><p id="managedCreateError" role="alert"></p>
+      <label>创建方式<select id="managedCreateSource"><option value="plugins">选择驱动和模型插件</option><option value="workspace">复制已有机器人配置</option><option value="deployed">从旧的已部署组合导入</option></select></label>
+      <label class="hidden" id="managedSourceRobotLabel">来源机器人<select id="managedSourceRobot"></select></label>
+      <div class="form-grid" id="managedPluginChoices"><label>驱动插件<select id="managedDriverChoice"></select></label><label>模型插件<select id="managedModelChoice"></select></label></div>
+      <p class="form-help">选择插件后由管理器在内部生成机器人组合；型号、序列号和业务参数都在创建后的机器人页面修改。</p><p id="managedCreateError" role="alert"></p>
       <div class="dialog-actions"><button type="button" data-close-dialog="managedCreateDialog">取消</button><button class="primary" type="submit">创建配置</button></div></form></dialog><dialog id="managedImportDialog"><form id="managedImportForm"><div class="dialog-title"><h2>导入配置包</h2><button type="button" data-close-dialog="managedImportDialog" aria-label="关闭">×</button></div>
-      <label>配置包类型<select name="kind" id="managedImportKind"><option value="workspace">网页导出的完整机器人配置</option><option value="plugin">驱动 / 模型 / 组合插件包</option></select></label>
+      <label>配置包类型<select name="kind" id="managedImportKind"><option value="workspace">网页导出的完整机器人配置</option><option value="plugin">驱动 / 模型插件包</option></select></label>
       <div id="managedImportIdentity" class="form-grid"><label>新配置 ID<input name="robot_id" pattern="[a-z0-9][a-z0-9_.-]{0,63}"></label><label>显示名称<input name="name"></label></div>
-      <label>ZIP 文件<input name="archive" type="file" accept=".zip" required></label><p class="form-help">插件包按驱动、模型、组合的顺序导入。部署插件前需停止机器人进程。</p><p id="managedImportError" role="alert"></p>
+      <label>ZIP 文件<input name="archive" type="file" accept=".zip" required></label><p class="form-help">首次使用只需导入驱动插件和模型插件，然后点击“新建机器人配置”。完整机器人配置 ZIP 用于机器间迁移。</p><p id="managedImportError" role="alert"></p>
       <div class="dialog-actions"><button type="button" data-close-dialog="managedImportDialog">取消</button><button class="primary" type="submit">校验并导入</button></div></form></dialog>
 <dialog id="recordingCheckDialog"><form method="dialog"><div class="dialog-title"><h2>录制话题尚未就绪</h2></div><p id="recordingCheckMessage"></p><div class="dialog-actions"><button value="cancel">返回检查</button><button type="button" id="forceRecording">仍然开始录制</button></div></form></dialog>
 <div id="toast" role="status"></div></main><script src="/static/app.js"></script><script src="/static/configurator.js"></script><script src="/static/datasets.js"></script><script src="/static/capture.js"></script></body></html>

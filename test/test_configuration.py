@@ -147,6 +147,9 @@ def test_robot_camera_configuration_is_versioned_deployed_and_exported(manager, 
     camera_config = __import__('yaml').safe_load(deployed.read_text())
     assert [camera['device_type'] for camera in camera_config['cameras']] == ['d405', 'd405', 'd435']
     assert camera_config['cameras'][2]['color_exposure_us'] == 4500
+    assert all(camera['sync_rgb_depth'] for camera in camera_config['cameras'])
+    assert all(camera['timestamp_alignment'] for camera in camera_config['cameras'])
+    assert all(camera['max_actual_exposure_us'] == 5000 for camera in camera_config['cameras'])
     exported = tmp_path / 'cameras.zip'
     manager.export('lab', robot['latest'], exported)
     imported = manager.import_workspace(exported, 'camera_copy', '相机副本')

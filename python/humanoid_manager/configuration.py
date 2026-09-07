@@ -145,9 +145,32 @@ def validate_cameras(value):
         camera.setdefault("backend", "realsense")
         camera.setdefault("required", True)
         camera.setdefault("pointcloud", False)
-        for key in ("enabled", "required", "pointcloud"):
+        camera.setdefault("device_type", "d405" if camera["backend"] == "realsense" else "custom_rgbd")
+        camera.setdefault("serial_no", "")
+        camera.setdefault("sync_rgb_depth", True)
+        camera.setdefault("timestamp_alignment", camera.get("normalize_timestamps", True))
+        camera.pop("normalize_timestamps", None)
+        camera.setdefault("max_actual_exposure_us", 5000)
+        camera.setdefault("rgbd_max_midpoint_skew_ms", 1.0)
+        camera.setdefault("camera_max_error_ms", 1.0)
+        for key in ("enabled", "required", "pointcloud", "sync_rgb_depth", "timestamp_alignment"):
             if type(camera[key]) is not bool:
                 raise DeploymentError(f"{ident}.{key} 必须为布尔值")
+        if not isinstance(camera["device_type"], str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", camera["device_type"]):
+            raise DeploymentError(f"{ident}.device_type 无效")
+        if not isinstance(camera["serial_no"], str) or len(camera["serial_no"]) > 128 or any(c.isspace() for c in camera["serial_no"]):
+            raise DeploymentError(f"{ident}.serial_no 无效")
+        if camera["enabled"] and camera["serial_no"]:
+            if camera["serial_no"] in serials:
+                raise DeploymentError(f"相机序列号重复: {camera['serial_no']}")
+            serials.add(camera["serial_no"])
+        exposure = camera["max_actual_exposure_us"]
+        if type(exposure) is not int or not 1 <= exposure <= 5000:
+            raise DeploymentError(f"{ident}.max_actual_exposure_us 必须是 1–5000 的整数")
+        for key in ("rgbd_max_midpoint_skew_ms", "camera_max_error_ms"):
+            number = camera[key]
+            if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number) or not 0 < number <= 1000:
+                raise DeploymentError(f"{ident}.{key} 必须是 0–1000 的有限正数")
         if camera["backend"] not in {"realsense", "ros_topics"}:
             raise DeploymentError(f"{ident}: backend 只支持 realsense 或 ros_topics")
         if camera["backend"] == "ros_topics":
@@ -168,11 +191,9 @@ def validate_cameras(value):
             result.append(camera)
             continue
         defaults = {
-            "device_type": "d405", "serial_no": "", "namespace": ident,
-            "camera_name": "camera", "width": 640, "height": 480, "fps": 30,
+            "namespace": ident, "camera_name": "camera", "width": 640, "height": 480, "fps": 30,
             "color_format": "RGB8", "depth_format": "Z16", "align_depth": False,
-            "normalize_timestamps": True, "depth_auto_exposure": True,
-            "depth_exposure_us": 4500, "depth_gain": 64,
+            "depth_auto_exposure": True, "depth_exposure_us": 4500, "depth_gain": 64,
             "depth_auto_exposure_limit_us": 4500, "depth_auto_gain_limit": 64,
             "color_auto_exposure": False, "color_exposure_us": 4500,
             "color_gain": 64, "parameters": {},
@@ -186,15 +207,7 @@ def validate_cameras(value):
         if endpoint in endpoints:
             raise DeploymentError(f"相机 ROS 命名空间与节点名重复: /{endpoint[0]}/{endpoint[1]}")
         endpoints.add(endpoint)
-        if not isinstance(camera["device_type"], str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", camera["device_type"]):
-            raise DeploymentError(f"{ident}.device_type 无效")
-        if not isinstance(camera["serial_no"], str) or len(camera["serial_no"]) > 128 or any(c.isspace() for c in camera["serial_no"]):
-            raise DeploymentError(f"{ident}.serial_no 无效")
-        if camera["serial_no"]:
-            if camera["serial_no"] in serials:
-                raise DeploymentError(f"相机序列号重复: {camera['serial_no']}")
-            serials.add(camera["serial_no"])
-        for key in ("align_depth", "normalize_timestamps", "depth_auto_exposure", "color_auto_exposure"):
+        for key in ("align_depth", "depth_auto_exposure", "color_auto_exposure"):
             if type(camera[key]) is not bool:
                 raise DeploymentError(f"{ident}.{key} 必须为布尔值")
         for key, low, high in (("width", 1, 8192), ("height", 1, 8192), ("fps", 1, 240),
@@ -204,6 +217,11 @@ def validate_cameras(value):
             number = camera[key]
             if type(number) is not int or not low <= number <= high:
                 raise DeploymentError(f"{ident}.{key} 必须是 {low}–{high} 的整数")
+        depth_setting = camera["depth_auto_exposure_limit_us"] if camera["depth_auto_exposure"] else camera["depth_exposure_us"]
+        if depth_setting > camera["max_actual_exposure_us"]:
+            raise DeploymentError(f"{ident}: 深度曝光设置不能超过曝光要求上限")
+        if camera["device_type"].lower() != "d405" and not camera["color_auto_exposure"] and camera["color_exposure_us"] > camera["max_actual_exposure_us"]:
+            raise DeploymentError(f"{ident}: RGB 手动曝光不能超过曝光要求上限")
         for key in ("color_format", "depth_format"):
             if not isinstance(camera[key], str) or not re.fullmatch(r"[A-Za-z0-9_]{1,32}", camera[key]):
                 raise DeploymentError(f"{ident}.{key} 无效")
