@@ -49,7 +49,7 @@
 <div class="config-actions"><p>保存保留配置；应用更新运行组件。录制期间可保存，停止后再应用。</p><div class="button-row"><button id="saveConfig" class="primary">保存配置</button><button id="applyConfig">应用已保存配置</button><button id="reloadSettings">重新读取</button></div></div></article><details class="panel changes-panel"><summary>配置历史</summary><div id="settingsHistory" class="history-list"></div></details></section>
 <dialog id="managedCreateDialog"><form id="managedCreateForm"><div class="dialog-title"><h2>新建机器人配置</h2><button type="button" data-close-dialog="managedCreateDialog" aria-label="关闭">×</button></div>
       <div class="form-grid"><label>配置 ID<input name="robot_id" required pattern="[a-z0-9][a-z0-9_.-]{0,63}" placeholder="例如 robot_lab"></label><label>显示名称<input name="name" required placeholder="机器人配置"></label></div>
-      <label>创建方式<select id="managedCreateSource"><option value="plugins">选择驱动和模型插件</option><option value="workspace">复制已有机器人配置</option><option value="deployed">从旧的已部署组合导入</option></select></label>
+      <label>创建方式<select id="managedCreateSource"><option value="plugins">选择驱动和模型插件</option><option value="workspace">复制已有机器人配置</option></select></label>
       <label class="hidden" id="managedSourceRobotLabel">来源机器人<select id="managedSourceRobot"></select></label>
       <div class="form-grid" id="managedPluginChoices"><label>驱动插件<select id="managedDriverChoice"></select></label><label>模型插件<select id="managedModelChoice"></select></label></div>
       <p class="form-help">选择插件后由管理器在内部生成机器人组合；型号、序列号和业务参数都在创建后的机器人页面修改。</p><p id="managedCreateError" role="alert"></p>
