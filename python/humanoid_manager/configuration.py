@@ -357,6 +357,114 @@ def resolve_initial_pose(document, pose_id):
     return {**pose, "goals": goals}
 
 
+def resolve_joint_jog(document, joint_name, delta_rad):
+    """Resolve one small joint increment to a feedback-seeded MoveJ goal."""
+    if not isinstance(joint_name, str) or not joint_name:
+        raise DeploymentError("点动关节名不能为空")
+    if (isinstance(delta_rad, bool) or not isinstance(delta_rad, (int, float)) or
+            not math.isfinite(delta_rad) or not 0 < abs(delta_rad) <= 0.2):
+        raise DeploymentError("关节点动步长必须在 0–0.2 rad 范围内（不含 0）")
+    resources = document.get("resources")
+    if not isinstance(resources, dict):
+        raise DeploymentError("机器人运动资源不存在")
+    try:
+        motion = resources["motion_params"]["humanoid_motion_control"]["ros__parameters"]
+        channels = resources["channel_config"]["channels"]
+    except (KeyError, TypeError) as error:
+        raise DeploymentError("机器人运动参数或通道不完整") from error
+    candidates = []
+    for channel in channels:
+        if not isinstance(channel, dict) or channel.get("kind") != "move_j":
+            continue
+        group = channel.get("group")
+        joints = motion.get(f"groups.{group}")
+        lower = motion.get(f"group_lower_limits.{group}")
+        upper = motion.get(f"group_upper_limits.{group}")
+        if (joint_name in (joints or []) and isinstance(lower, list) and
+                isinstance(upper, list) and len(joints) == len(lower) == len(upper)):
+            candidates.append((len(joints), channel, joints, lower, upper))
+    if not candidates:
+        raise DeploymentError(f"{joint_name}: 没有可用于点动的 MoveJ 通道")
+    _, channel, joints, lower, upper = min(candidates, key=lambda item: item[0])
+    driver = resources.get("driver_params", {}).get(
+        "humanoid_driver_runtime", {}).get("ros__parameters", {})
+    state_topic = motion.get("joint_state_endpoint") or driver.get(
+        "platform_joint_state_topic", "/hc_teleop/joint_states"
+    )
+    if not isinstance(state_topic, str) or not state_topic:
+        raise DeploymentError("机器人没有配置统一关节反馈话题")
+    return {
+        "channel": channel["name"],
+        "endpoint": channel["endpoint"],
+        "group": channel["group"],
+        "joint_names": list(joints),
+        "lower_limits": [float(value) for value in lower],
+        "upper_limits": [float(value) for value in upper],
+        "joint_name": joint_name,
+        "delta_rad": float(delta_rad),
+        "state_topic": state_topic,
+        "velocity_scale": 0.1,
+        "acceleration_scale": 0.1,
+        "jerk_scale": 0.1,
+        "timeout_sec": 15.0,
+    }
+
+
+def resolve_gripper_test(document, gripper_name, target):
+    """Resolve an open/close test to the managed JointState gripper contract."""
+    if target not in {"open", "close"}:
+        raise DeploymentError("夹爪测试目标只能是 open 或 close")
+    try:
+        parameters = document["resources"]["gripper_params"][
+            "humanoid_gripper_runtime"
+        ]["ros__parameters"]
+        names = parameters["gripper_names"]
+    except (KeyError, TypeError) as error:
+        raise DeploymentError("当前机器人没有可测试的夹爪插件") from error
+    if gripper_name not in names:
+        raise DeploymentError("所选夹爪不在当前插件中")
+    plugin_parameters = {}
+    for entry in parameters.get("plugin_parameters", []):
+        if isinstance(entry, str) and "=" in entry:
+            key, value = entry.split("=", 1)
+            plugin_parameters[key] = value
+    prefix = f"{gripper_name}."
+    try:
+        minimum = float(plugin_parameters[prefix + "min_position"])
+        maximum = float(plugin_parameters[prefix + "max_position"])
+    except (KeyError, ValueError) as error:
+        minimum = maximum = None
+
+    mapping = next((item for item in document["resources"].get(
+        "hc_teleop_config", {}).get("grippers", [])
+        if item.get("joint_name") == gripper_name), None)
+    if mapping is not None:
+        position = mapping["open_position"] if target == "open" else mapping["closed_position"]
+        effort = mapping.get("max_effort", 0.0)
+        speed = abs(float(mapping.get("max_speed", 0.05)))
+        distance = abs(float(mapping["open_position"]) - float(mapping["closed_position"]))
+        timeout = min(15.0, max(2.0, distance / max(speed, 1.0e-6) * 1.5))
+    elif minimum is not None and maximum is not None:
+        position = maximum if target == "open" else minimum
+        effort = 0.0
+        timeout = 5.0
+    else:
+        raise DeploymentError(f"{gripper_name}: 插件或遥操作配置没有定义测试开合位置")
+    position = float(position)
+    effort = float(effort)
+    if (not math.isfinite(position) or not math.isfinite(effort) or effort < 0.0 or
+            (minimum is not None and not minimum <= position <= maximum)):
+        raise DeploymentError(f"{gripper_name}: 测试位置或力度超出插件限制")
+    return {
+        "command_topic": parameters["platform_gripper_command_topic"],
+        "state_topic": parameters["platform_gripper_state_topic"],
+        "name": gripper_name,
+        "position": position,
+        "max_effort": effort,
+        "timeout_sec": timeout,
+    }
+
+
 def normalize_document(document):
     value = copy.deepcopy(document)
     value.setdefault("cameras", [])
@@ -797,11 +905,20 @@ class ConfigurationManager:
                     archive.write(packed, f"{name}.zip")
         return {"path": str(output)}
 
-    def import_bundle(self, archive):
+    def import_bundle(self, archive, expected_plugin_type=""):
         with deployment_lock(self.plugin_root):
             manifest = validate_archive(Path(archive), check_linkage=True)
+            if expected_plugin_type and manifest.get("plugin_type") != expected_plugin_type:
+                raise DeploymentError(
+                    f"请选择 {expected_plugin_type} 类型的插件包"
+                )
             destination = deploy_archive(Path(archive), self.plugin_root)
-        return {"ok": True, "path": str(destination), "artifact_type": manifest["artifact_type"]}
+        return {
+            "ok": True,
+            "path": str(destination),
+            "artifact_type": manifest["artifact_type"],
+            "plugin_type": manifest.get("plugin_type"),
+        }
 
     def import_workspace(self, archive, robot_id, name):
         self.state_root.mkdir(parents=True, exist_ok=True)

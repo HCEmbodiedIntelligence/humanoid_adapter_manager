@@ -151,6 +151,87 @@ class ConfiguratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(blocked.status, 409)
         execute.assert_not_called()
 
+    async def test_gripper_button_resolves_saved_plugin_and_checks_runtime_without_hardware(self):
+        document = {'gripper_driver': {'plugin_id':'demo_gripper','name':'Demo gripper'},
+            'resources': {
+                'gripper_params': {'humanoid_gripper_runtime': {'ros__parameters': {
+                    'gripper_names':['left_gripper'],
+                    'platform_gripper_command_topic':'/hc_teleop/gripper_commands',
+                    'platform_gripper_state_topic':'/hc_teleop/gripper_states',
+                    'plugin_parameters':['left_gripper.min_position=0.0',
+                                         'left_gripper.max_position=0.08']}}},
+                'hc_teleop_config': {'grippers':[{'joint_name':'left_gripper',
+                    'open_position':0.07,'closed_position':0.01,
+                    'max_effort':12.0,'max_speed':0.03}]}}}
+        detail = {'robot_id':'lab','latest':'r-0123456789abcdef',
+            'deployed':{'revision':'r-0123456789abcdef'},'saved':document}
+        async def fake_call(operation, **arguments):
+            self.assertEqual(operation, 'get')
+            self.assertEqual(arguments['robot_id'], 'lab')
+            return detail
+        self.runtime.adapter_client.call = fake_call
+        self.runtime.ros.events['configuration'] = (time.monotonic(), {
+            'robot_id':'lab','revision':'r-0123456789abcdef','state':'observed',
+            'missing_nodes':[]})
+        self.runtime.ros.graph.update(state='running', graph_updated=time.monotonic(),
+            discovered_nodes=[{'name':'humanoid_gripper_runtime','namespace':'/'}])
+        completed = {'name':'left_gripper','initial_position':0.02,
+            'target_position':0.07,'final_position':0.07,'feedback_messages':3,
+            'command_messages':2,'duration_seconds':0.1}
+        with patch('humanoid_manager.web.adapter_api.execute_gripper_test',
+                   return_value=completed) as execute:
+            response = await self.client.post(
+                '/api/adapters/robots/lab/grippers/left_gripper/test',
+                json={'target':'open'})
+        self.assertEqual(response.status, 200, await response.text())
+        command = execute.call_args.args[0]
+        self.assertEqual(command['command_topic'], '/hc_teleop/gripper_commands')
+        self.assertEqual(command['state_topic'], '/hc_teleop/gripper_states')
+        self.assertEqual(command['position'], 0.07)
+        self.assertEqual(command['max_effort'], 12.0)
+
+        self.runtime.ros.events['teleop'] = (time.monotonic(), {'enabled':True})
+        with patch('humanoid_manager.web.adapter_api.execute_gripper_test') as execute:
+            blocked = await self.client.post(
+                '/api/adapters/robots/lab/grippers/left_gripper/test',
+                json={'target':'close'})
+        self.assertEqual(blocked.status, 409)
+        execute.assert_not_called()
+
+    async def test_joint_jog_uses_feedback_seeded_movej_without_touching_hardware(self):
+        document = {'resources': {
+            'motion_params': {'humanoid_motion_control': {'ros__parameters': {
+                'joint_state_endpoint':'/hc_teleop/joint_states',
+                'groups.arm':['joint1','joint2'],
+                'group_lower_limits.arm':[-1.0,-1.0],
+                'group_upper_limits.arm':[1.0,1.0]}}},
+            'channel_config': {'channels':[{'name':'arm_move_j','kind':'move_j',
+                'endpoint':'/motion/arm/move_j','group':'arm','priority':50}]}}}
+        detail = {'robot_id':'lab','latest':'r-0123456789abcdef',
+            'deployed':{'revision':'r-0123456789abcdef'},'saved':document}
+        async def fake_call(operation, **arguments):
+            self.assertEqual(operation, 'get')
+            return detail
+        self.runtime.adapter_client.call = fake_call
+        self.runtime.ros.events['configuration'] = (time.monotonic(), {
+            'robot_id':'lab','revision':'r-0123456789abcdef','state':'observed',
+            'missing_nodes':[]})
+        self.runtime.ros.graph.update(state='running', graph_updated=time.monotonic(),
+            discovered_nodes=[{'name':'humanoid_driver_runtime','namespace':'/'},
+                              {'name':'humanoid_motion_control','namespace':'/'}])
+        completed = {'joint_name':'joint2','initial_position_rad':0.2,
+            'target_position_rad':0.21,'delta_rad':0.01,'status_code':0}
+        with patch('humanoid_manager.web.adapter_api.execute_joint_jog',
+                   return_value=completed) as execute:
+            response = await self.client.post(
+                '/api/adapters/robots/lab/joints/joint2/jog', json={'delta_rad':0.01})
+        self.assertEqual(response.status, 200, await response.text())
+        jog = execute.call_args.args[0]
+        self.assertEqual(jog['endpoint'], '/motion/arm/move_j')
+        self.assertEqual(jog['state_topic'], '/hc_teleop/joint_states')
+        self.assertEqual(jog['joint_names'], ['joint1','joint2'])
+        self.assertEqual(jog['delta_rad'], 0.01)
+
     async def test_recording_path_cannot_escape_and_duplicate_names_preserve_files(self):
         response = await self.client.post('/api/recording/start', json={'filename':'../escape', 'force':True})
         self.assertEqual(response.status, 400)

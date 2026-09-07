@@ -4,7 +4,13 @@ import json
 
 import pytest
 
-from humanoid_manager.configuration import ConfigurationManager, ConfigurationConflict, resolve_initial_pose
+from humanoid_manager.configuration import (
+    ConfigurationManager,
+    ConfigurationConflict,
+    resolve_gripper_test,
+    resolve_initial_pose,
+    resolve_joint_jog,
+)
 from humanoid_manager.deployment import DeploymentError, deploy_archive, pack_directory, resolve_robot_deployment
 from humanoid_manager.runtime_state import configuration_identity, deployment_lock
 from test_deployment_plugins import _hardware_tree, _gripper_tree, _model_tree, _composition_tree
@@ -22,6 +28,14 @@ def manager(tmp_path):
 
 def create(manager):
     return manager.create('lab', '实验机器人', source_robot='test_robot')
+
+
+def test_direct_gripper_import_rejects_other_plugin_types_before_deploy(manager, tmp_path):
+    archive = pack_directory(_hardware_tree(tmp_path / 'other-driver'), tmp_path / 'driver.zip')
+    before = sorted(path.name for path in (manager.plugin_root / 'hardware_drivers').iterdir())
+    with pytest.raises(DeploymentError, match='gripper_driver'):
+        manager.import_bundle(archive, expected_plugin_type='gripper_driver')
+    assert sorted(path.name for path in (manager.plugin_root / 'hardware_drivers').iterdir()) == before
 
 
 def test_edit_validate_apply_restore_export_roundtrip(manager, tmp_path):
@@ -130,6 +144,35 @@ def test_add_receiver_resource_and_restore_without_repacking_model(manager):
     restored=manager.validate('lab',restored['etag'],save=True)
     manager.apply('lab',restored['latest'],restored['etag'])
     assert 'hc_teleop_config' not in resolve_robot_deployment(manager.plugin_root,'lab').resources
+
+
+def test_joint_jog_resolves_smallest_move_j_group_and_rejects_unsafe_step(manager):
+    robot = create(manager)
+    jog = resolve_joint_jog(robot['saved'], 'joint2', 0.01)
+    assert jog['endpoint'] == '/motion/arm/move_j'
+    assert jog['joint_names'] == ['joint1', 'joint2']
+    assert jog['state_topic'] == '/hc_teleop/joint_states'
+    assert jog['delta_rad'] == 0.01
+    with pytest.raises(DeploymentError, match='步长'):
+        resolve_joint_jog(robot['saved'], 'joint2', 0.3)
+
+
+def test_gripper_test_uses_managed_topics_and_configured_open_close_positions(manager):
+    robot = create(manager)
+    document = copy.deepcopy(robot['saved'])
+    document['resources']['gripper_params'] = copy.deepcopy(
+        manager.catalog()['gripper_drivers']['fake_gripper']['template']
+    )
+    document['resources']['hc_teleop_config'] = {'grippers': [{
+        'id': 'left', 'joint_name': 'left_gripper', 'open_position': 0.04,
+        'closed_position': 0.002, 'max_effort': 12.0, 'max_speed': 0.02,
+    }]}
+    opened = resolve_gripper_test(document, 'left_gripper', 'open')
+    closed = resolve_gripper_test(document, 'left_gripper', 'close')
+    assert opened['command_topic'] == '/hc_teleop/gripper_commands'
+    assert opened['state_topic'] == '/hc_teleop/gripper_states'
+    assert opened['position'] == 0.04 and closed['position'] == 0.002
+    assert opened['max_effort'] == 12.0
 
 
 def test_attach_configure_export_and_remove_gripper_from_existing_robot(manager, tmp_path):

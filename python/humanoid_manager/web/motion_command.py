@@ -125,3 +125,83 @@ def execute_move_j_pose(goals, domain_id):
             node.destroy_node()
         if context.ok():
             context.shutdown()
+
+
+def execute_joint_jog(jog, domain_id):
+    """Read a fresh complete group state, add one bounded delta, then execute MoveJ."""
+    context = node = executor = subscription = None
+    positions = None
+    try:
+        import math
+        import rclpy
+        from rclpy.context import Context
+        from rclpy.executors import SingleThreadedExecutor
+        from rclpy.qos import qos_profile_sensor_data
+        from sensor_msgs.msg import JointState
+
+        expected = list(jog["joint_names"])
+
+        def receive(message):
+            nonlocal positions
+            if len(message.name) != len(set(message.name)) or not all(
+                    name in message.name for name in expected):
+                return
+            values = [message.position[message.name.index(name)]
+                      if message.name.index(name) < len(message.position) else math.nan
+                      for name in expected]
+            if all(math.isfinite(value) for value in values):
+                positions = values
+
+        context = Context()
+        rclpy.init(args=[], context=context, domain_id=int(domain_id))
+        node = rclpy.create_node(
+            f"humanoid_manager_jog_{uuid.uuid4().hex[:10]}", context=context
+        )
+        executor = SingleThreadedExecutor(context=context)
+        executor.add_node(node)
+        subscription = node.create_subscription(
+            JointState, jog["state_topic"], receive, qos_profile_sensor_data
+        )
+        deadline = time.monotonic() + 3.0
+        while positions is None and time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=min(0.05, deadline - time.monotonic()))
+        if positions is None:
+            raise MotionCommandError("没有收到包含完整关节组的新鲜实测反馈，未执行点动")
+    except Exception as error:
+        if isinstance(error, MotionCommandError):
+            raise
+        raise MotionCommandError(f"读取关节点动反馈失败: {error}") from error
+    finally:
+        if executor is not None and node is not None:
+            executor.remove_node(node)
+        if node is not None:
+            if subscription is not None:
+                node.destroy_subscription(subscription)
+            node.destroy_node()
+        if context is not None and context.ok():
+            context.shutdown()
+
+    index = jog["joint_names"].index(jog["joint_name"])
+    initial = positions[index]
+    target = initial + float(jog["delta_rad"])
+    lower, upper = jog["lower_limits"][index], jog["upper_limits"][index]
+    if target < lower or target > upper:
+        raise MotionCommandError(
+            f"{jog['joint_name']} 点动目标 {target:.6f} rad 超出限位 [{lower}, {upper}]"
+        )
+    goal = {
+        key: jog[key] for key in (
+            "channel", "endpoint", "group", "joint_names", "velocity_scale",
+            "acceleration_scale", "jerk_scale", "timeout_sec",
+        )
+    }
+    goal["positions_rad"] = positions
+    goal["positions_rad"][index] = target
+    result = execute_move_j_pose([goal], domain_id)[0]
+    return {
+        **result,
+        "joint_name": jog["joint_name"],
+        "initial_position_rad": initial,
+        "target_position_rad": target,
+        "delta_rad": jog["delta_rad"],
+    }

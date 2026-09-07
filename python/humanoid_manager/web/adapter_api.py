@@ -9,9 +9,10 @@ import tempfile
 
 from aiohttp import web
 
-from ..configuration import resolve_initial_pose
+from ..configuration import resolve_gripper_test, resolve_initial_pose, resolve_joint_jog
 from ..deployment import DeploymentError
-from .motion_command import MotionCommandError, execute_move_j_pose
+from .gripper_command import GripperCommandError, execute_gripper_test
+from .motion_command import MotionCommandError, execute_joint_jog, execute_move_j_pose
 
 
 class AdapterClient:
@@ -111,7 +112,7 @@ def register_adapter_routes(app, store, runtime):
                                 if total > 100 * 1024 * 1024:
                                     raise web.HTTPRequestEntityTooLarge(max_size=100 * 1024 * 1024, actual_size=total)
                                 stream.write(chunk)
-                    elif part.name in {"kind", "robot_id", "name"}:
+                    elif part.name in {"kind", "robot_id", "name", "expected_plugin_type"}:
                         fields[part.name] = await part.text()
                 if not archive.exists():
                     raise web.HTTPBadRequest(text="请选择 ZIP 配置包")
@@ -119,7 +120,10 @@ def register_adapter_routes(app, store, runtime):
                     result = await client.call("import_workspace", archive=str(archive), robot_id=fields.get("robot_id", ""), name=fields.get("name", ""))
                 else:
                     require_stopped()
-                    result = await client.call("import_bundle", archive=str(archive))
+                    result = await client.call(
+                        "import_bundle", archive=str(archive),
+                        expected_plugin_type=fields.get("expected_plugin_type", ""),
+                    )
                 return web.json_response(result)
 
     async def export(request):
@@ -178,11 +182,85 @@ def register_adapter_routes(app, store, runtime):
                 "results": results,
             })
 
+    def require_running_robot(detail, robot_id, required_nodes):
+        deployed = detail.get("deployed")
+        if not deployed or deployed.get("revision") != detail.get("latest"):
+            raise web.HTTPConflict(text="请先保存并应用当前机器人版本")
+        platform = runtime.ros.platform_status() if runtime.ros else {}
+        current = platform.get("configuration")
+        if not current or not current.get("fresh"):
+            raise web.HTTPConflict(text="没有检测到当前运行机器人的新鲜配置状态")
+        identity = current.get("data", {})
+        if identity.get("robot_id") != robot_id or identity.get("revision") != detail.get("latest"):
+            raise web.HTTPConflict(text="网页配置与当前运行机器人版本不一致")
+        if identity.get("state") != "observed" or identity.get("missing_nodes"):
+            raise web.HTTPConflict(text="机器人运行组件尚未全部就绪")
+        graph = runtime.ros.status() if runtime.ros else {}
+        nodes = {item.get("name") for item in graph.get("discovered_nodes", [])}
+        missing = sorted(set(required_nodes) - nodes)
+        if graph.get("state") != "running" or graph.get("graph_age", 100) > 5:
+            raise web.HTTPConflict(text="ROS 2 节点图不可用或状态已过期")
+        if missing:
+            raise web.HTTPConflict(text="测试所需节点未运行: " + ", ".join(missing))
+        teleop = platform.get("teleop")
+        if teleop and teleop.get("fresh") and teleop.get("data", {}).get("enabled"):
+            raise web.HTTPConflict(text="请先停止遥操作使能，再执行手动测试")
+        if runtime.player and runtime.player.status().get("is_active"):
+            raise web.HTTPConflict(text="正在回放数据，请停止回放后再执行手动测试")
+
+    async def test_gripper(request):
+        robot_id = request.match_info["robot_id"]
+        gripper_name = request.match_info["gripper_name"]
+        body = await request.json()
+        if not isinstance(body, dict) or set(body) != {"target"}:
+            raise web.HTTPBadRequest(text="夹爪测试参数无效")
+        async with motion_lock:
+            detail = await client.call("get", robot_id=robot_id)
+            require_running_robot(detail, robot_id, {"humanoid_gripper_runtime"})
+            try:
+                command = resolve_gripper_test(detail["saved"], gripper_name, body["target"])
+                result = await asyncio.to_thread(
+                    execute_gripper_test, command, runtime.config["ros"]["domain_id"]
+                )
+            except DeploymentError as error:
+                raise web.HTTPBadRequest(text=str(error)) from error
+            except GripperCommandError as error:
+                raise web.HTTPConflict(text=str(error)) from error
+            return web.json_response({"ok": True, "target": body["target"], **result})
+
+    async def jog_joint(request):
+        robot_id = request.match_info["robot_id"]
+        joint_name = request.match_info["joint_name"]
+        body = await request.json()
+        if not isinstance(body, dict) or set(body) != {"delta_rad"}:
+            raise web.HTTPBadRequest(text="关节点动参数无效")
+        async with motion_lock:
+            detail = await client.call("get", robot_id=robot_id)
+            require_running_robot(
+                detail, robot_id, {"humanoid_driver_runtime", "humanoid_motion_control"}
+            )
+            try:
+                jog = resolve_joint_jog(detail["saved"], joint_name, body["delta_rad"])
+                result = await asyncio.to_thread(
+                    execute_joint_jog, jog, runtime.config["ros"]["domain_id"]
+                )
+            except DeploymentError as error:
+                raise web.HTTPBadRequest(text=str(error)) from error
+            except MotionCommandError as error:
+                raise web.HTTPConflict(text=str(error)) from error
+            return web.json_response({"ok": True, **result})
+
     app.router.add_get("/api/adapters", catalog)
     app.router.add_post("/api/adapters/robots", create)
     app.router.add_post("/api/adapters/import", upload)
     app.router.add_get("/api/adapters/robots/{robot_id}", detail)
     app.router.add_get("/api/adapters/robots/{robot_id}/export", export)
     app.router.add_post("/api/adapters/robots/{robot_id}/poses/{pose_id}/execute", execute_pose)
+    app.router.add_post(
+        "/api/adapters/robots/{robot_id}/grippers/{gripper_name}/test", test_gripper
+    )
+    app.router.add_post(
+        "/api/adapters/robots/{robot_id}/joints/{joint_name}/jog", jog_joint
+    )
     app.router.add_post("/api/adapters/robots/{robot_id}/{operation}", action)
     return client
