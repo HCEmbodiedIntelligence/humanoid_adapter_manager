@@ -19,6 +19,7 @@ from humanoid_manager.deployment import (
 
 
 PLUGIN_CLASS = "fake_driver/FakeRobotDriver"
+GRIPPER_CLASS = "fake_gripper/FakeGripperDriver"
 
 
 def _architecture() -> str:
@@ -101,6 +102,104 @@ def _hardware_tree(
     return root
 
 
+def _gripper_tree(root: Path) -> Path:
+    package_share = root / "prefix/share/fake_gripper"
+    marker = root / "prefix/share/ament_index/resource_index/packages/fake_gripper"
+    library = root / "prefix/lib/libfake_gripper.so"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("", encoding="utf-8")
+    package_share.mkdir(parents=True, exist_ok=True)
+    (package_share / "package.xml").write_text(
+        """<?xml version="1.0"?>
+<package format="3"><name>fake_gripper</name><version>1.0.0</version>
+<description>test</description><maintainer email="test@example.com">test</maintainer>
+<license>Proprietary</license></package>
+""",
+        encoding="utf-8",
+    )
+    plugins = package_share / "plugins/fake_gripper_plugins.xml"
+    plugins.parent.mkdir(parents=True, exist_ok=True)
+    plugins.write_text(
+        f"""<library path="fake_gripper">
+  <class name="{GRIPPER_CLASS}" type="fake_gripper::FakeGripperDriver"
+    base_class_type="humanoid_driver_interface::GripperDriverPlugin"/>
+</library>
+""",
+        encoding="utf-8",
+    )
+    gripper_config = package_share / "config/gripper.yaml"
+    _write_yaml(gripper_config, {
+        "humanoid_gripper_runtime": {"ros__parameters": {
+            "plugin_class": GRIPPER_CLASS,
+            "gripper_names": ["left_gripper", "right_gripper"],
+            "vendor_gripper_names": ["left_finger", "right_finger"],
+            "position_units": ["m", "m"],
+            "vendor_to_logical_scales": [1.0, -1.0],
+            "vendor_to_logical_offsets": [0.0, 0.04],
+            "platform_gripper_state_topic": "/hc_teleop/gripper_states",
+            "platform_gripper_command_topic": "/hc_teleop/gripper_commands",
+            "plugin_parameters": ["transport=test"],
+        }}
+    })
+    library.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile("/bin/true", library)
+    _write_yaml(root / "manifest.yaml", {
+        "schema_version": 1,
+        "artifact_type": "plugin",
+        "plugin_type": "gripper_driver",
+        "plugin_id": "fake_gripper",
+        "name": "Fake test gripper",
+        "compatibility": {
+            "ros_distro": "humble",
+            "architecture": _architecture(),
+            "driver_interface_abi": 1,
+        },
+        "package_name": "fake_gripper",
+        "ament_prefix": "prefix",
+        "plugin_xml": "prefix/share/fake_gripper/plugins/fake_gripper_plugins.xml",
+        "library": "prefix/lib/libfake_gripper.so",
+        "plugin_class": GRIPPER_CLASS,
+        "resources": {"gripper_params": "prefix/share/fake_gripper/config/gripper.yaml"},
+    })
+    return root
+
+
+def _ros_topic_gripper_tree(root: Path) -> Path:
+    root = _gripper_tree(root)
+    manifest_path = root / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["plugin_class"] = "humanoid_gripper/RosTopicGripperDriver"
+    _write_yaml(manifest_path, manifest)
+    plugin_path = root / manifest["plugin_xml"]
+    plugin_path.write_text(
+        plugin_path.read_text(encoding="utf-8").replace(
+            GRIPPER_CLASS, manifest["plugin_class"]
+        ),
+        encoding="utf-8",
+    )
+    config_path = root / manifest["resources"]["gripper_params"]
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    parameters = config["humanoid_gripper_runtime"]["ros__parameters"]
+    parameters["plugin_class"] = manifest["plugin_class"]
+    parameters["plugin_parameters"] = [
+        "left_gripper.command_topic=/left/command",
+        "left_gripper.command_type=float64_multi_array",
+        "left_gripper.feedback_topic=/joint_states",
+        "left_gripper.feedback_type=joint_state",
+        "left_gripper.min_position=0",
+        "left_gripper.max_position=0.04",
+        "right_gripper.command_topic=/right/command",
+        "right_gripper.command_type=float64_multi_array",
+        "right_gripper.feedback_topic=/joint_states",
+        "right_gripper.feedback_type=joint_state",
+        "right_gripper.min_position=0",
+        "right_gripper.max_position=0.04",
+        "feedback_timeout_s=0.5",
+    ]
+    _write_yaml(config_path, config)
+    return root
+
+
 def _model_tree(
     root: Path,
     *,
@@ -175,7 +274,15 @@ def _model_tree(
     return root
 
 
-def _composition_tree(root: Path, *, name: str = "Test robot") -> Path:
+def _composition_tree(
+    root: Path, *, name: str = "Test robot", gripper_id: str = ""
+) -> Path:
+    plugins = {
+        "hardware_driver": "fake_driver",
+        "robot_model": "test_model",
+    }
+    if gripper_id:
+        plugins["gripper_driver"] = gripper_id
     _write_yaml(
         root / "manifest.yaml",
         {
@@ -183,10 +290,7 @@ def _composition_tree(root: Path, *, name: str = "Test robot") -> Path:
             "artifact_type": "robot_composition",
             "robot_id": "test_robot",
             "name": name,
-            "plugins": {
-                "hardware_driver": "fake_driver",
-                "robot_model": "test_model",
-            },
+            "plugins": plugins,
         },
     )
     return root
@@ -240,6 +344,7 @@ def test_deploy_independent_plugins_compose_and_resolve(tmp_path: Path) -> None:
         "hardware_drivers": {
             "fake_driver": {"path": str(hardware_path.resolve())},
         },
+        "gripper_drivers": {},
         "robot_models": {
             "test_model": {"path": str(model_path.resolve())},
         },
@@ -256,6 +361,47 @@ def test_model_cross_configuration_mismatch_is_rejected(tmp_path: Path) -> None:
             _model_tree(tmp_path / "bad-model", sdk_joint_order=["joint2", "joint1"]),
             tmp_path / "bad-model.zip",
         )
+
+
+def test_gripper_plugin_composes_and_resolves_independently(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "deployed"
+    for name, tree in (
+        ("hardware", _hardware_tree(tmp_path / "hardware")),
+        ("model", _model_tree(tmp_path / "model")),
+        ("gripper", _gripper_tree(tmp_path / "gripper")),
+        ("composition", _composition_tree(
+            tmp_path / "composition", gripper_id="fake_gripper"
+        )),
+    ):
+        archive = pack_directory(tree, tmp_path / f"{name}.zip")
+        deploy_archive(archive, plugin_root, check_linkage=False)
+
+    deployment = resolve_robot_deployment(plugin_root, "test_robot")
+    assert deployment.gripper_class == GRIPPER_CLASS
+    assert deployment.resources["gripper_params"].is_file()
+    assert deployment.gripper_plugin_xml_paths[0].is_file()
+    assert str(deployment.gripper_ament_prefixes[0]) in deployment.gripper_environment()[
+        "AMENT_PREFIX_PATH"
+    ]
+    assert str(deployment.gripper_library_paths[0]) in deployment.gripper_environment()[
+        "LD_LIBRARY_PATH"
+    ]
+
+
+def test_ros_topic_gripper_parameters_are_validated_before_deployment(tmp_path: Path) -> None:
+    tree = _ros_topic_gripper_tree(tmp_path / "gripper")
+    pack_directory(tree, tmp_path / "gripper.zip")
+    manifest = yaml.safe_load((tree / "manifest.yaml").read_text(encoding="utf-8"))
+    config_path = tree / manifest["resources"]["gripper_params"]
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    parameters = config["humanoid_gripper_runtime"]["ros__parameters"]
+    parameters["plugin_parameters"] = [
+        entry for entry in parameters["plugin_parameters"]
+        if not entry.startswith("left_gripper.max_position=")
+    ]
+    _write_yaml(config_path, config)
+    with pytest.raises(DeploymentError, match="left_gripper.max_position"):
+        pack_directory(tree, tmp_path / "invalid-gripper.zip")
 
 
 def test_model_cannot_select_an_execution_driver(tmp_path: Path) -> None:

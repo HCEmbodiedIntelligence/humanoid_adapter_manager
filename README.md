@@ -30,7 +30,7 @@ colcon build --packages-select hc_teleop_recv humanoid_manager robot_bringup --s
 
 ## 网页操作
 
-- **机器人配置**：导入驱动、模型、组合插件或完整配置包；新建、复制机器人；编辑驱动参数、关节映射、URDF、关节分组、运动通道、工具、初始姿态、接收端与录制方案。包括独立底盘页与多个夹爪配置，默认不启用硬件接口。没有接收端资源时，可在“机械臂遥操作”页根据运动通道添加 `hc_teleop_recv` 配置。
+- **机器人配置**：导入机械臂驱动、夹爪、模型插件或完整配置包；新建、复制机器人；编辑驱动参数、关节映射、夹爪设备/话题转换、URDF、运动通道、初始姿态、接收端与录制方案。夹爪插件可随机器人版本添加、更换或移除，与机械臂驱动保持独立。
 - **遥操作初始姿态**：在“初始姿态”页为一个或多个 MoveJ 通道设置关节角、速度、加速度、加加速度和超时。一个姿态可以同时包含双臂。姿态必须通过模型限位校验并保存、应用到当前运行版本后才能点击执行；网页执行前再次确认，接收端仍处于遥操作使能时拒绝发送。运动完成以 `humanoid_motion_server` 的真实关节反馈结果为准。
 - **草稿与版本**：保存草稿、关联校验、保存版本、比较修改、恢复历史、导入导出。每个机器人使用独立驱动/模型参数副本。多个窗口同时修改会提示冲突。
 - **运行状态**：显示运行中的机器人、配置版本、驱动诊断、接收端状态、关节反馈与指令。超时状态显示过期；ROS 节点存在与驱动已连接分别显示。
@@ -53,13 +53,19 @@ ROS_DOMAIN_ID=14 ros2 launch humanoid_manager managed_robot.launch.py \
   robot_id:=你的机器人ID
 ```
 
-此入口启动驱动、运动服务和 `hc_teleop_recv`，持有部署读锁并发布 `/humanoid/configuration_state`。其报告的配置指纹/版本会写入录制元数据。可以通过 `start_driver:=false`、`start_motion:=false` 或 `start_teleop:=false` 分别关闭组件。启用遥操作时必须有 `hc_teleop_config`，不会启动旧接收端。
+此入口启动机械臂驱动、可选夹爪运行时、运动服务和 `hc_teleop_recv`，持有部署读锁并发布
+`/humanoid/configuration_state`。其报告的配置指纹/版本会写入录制元数据。可以通过
+`start_driver:=false`、`start_gripper:=false`、`start_motion:=false` 或 `start_teleop:=false`
+分别关闭组件。启用遥操作时必须有 `hc_teleop_config`，不会启动旧接收端。
 
-尚未导入插件时，在网页“导入配置包”中导入驱动和模型 ZIP，然后在“机器人配置”中选择两者创建机器人。机器人组合由管理器内部生成，不需要准备或编辑 composition ZIP。CLI 仍可用于导入底层插件：
+尚未导入插件时，在网页“导入配置包”中导入机械臂驱动、模型和可选夹爪 ZIP，然后在
+“机器人配置”中选择它们创建机器人。机器人组合由管理器内部生成，不需要准备或编辑
+composition ZIP。CLI 仍可用于导入底层插件：
 
 ```bash
 ros2 run humanoid_manager humanoid_pluginctl.py --root "$HOME/.local/share/humanoid-plugins" deploy driver.zip
 ros2 run humanoid_manager humanoid_pluginctl.py --root "$HOME/.local/share/humanoid-plugins" deploy model.zip
+ros2 run humanoid_manager humanoid_pluginctl.py --root "$HOME/.local/share/humanoid-plugins" deploy gripper.zip
 ```
 
 ## 按钮标记与数据保存

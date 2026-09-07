@@ -2,10 +2,11 @@
 
 ## 边界
 
-目标机只安装平台核心包。机器人适配内容拆成两个独立插件：
+目标机只安装平台核心包。机器人适配内容拆成三个相互独立的插件类型：
 
 1. `hardware_driver`：驱动 `.so`、pluginlib 元数据及该驱动的参数；
-2. `robot_model`：运动学 URDF、运动组/限制、通道和工具定义。
+2. `gripper_driver`：可选的夹爪 `.so`、pluginlib 元数据、话题/SDK 参数与夹爪映射；
+3. `robot_model`：运动学 URDF、运动组/限制、通道和工具定义。
 
 `robot_composition` 是只引用插件 ID 的整机组合清单，不是功能插件，不包含代码或资源。
 `humanoid_manager` 只负责校验、部署和解析；`robot_bringup` 才负责启动进程。
@@ -18,6 +19,7 @@ I/O 始终由 `humanoid_driver_runtime` 独占。这里没有仿真启动逻辑�
 ```text
 /var/lib/humanoid-plugins/
 ├── hardware_drivers/<plugin-id>/
+├── gripper_drivers/<plugin-id>/
 ├── robot_models/<plugin-id>/
 ├── robots/<robot-id>/
 └── .staging/
@@ -69,6 +71,30 @@ resources:
 
 驱动进程会获得只用于发现该未安装插件的 `AMENT_PREFIX_PATH` 和 `LD_LIBRARY_PATH`。motion 进程
 不会继承插件库路径。
+
+## gripper_driver 插件
+
+夹爪插件使用 `humanoid_driver_interface::GripperDriverPlugin`，由独立的
+`humanoid_gripper_runtime_node` 加载。包结构和二进制校验与 `hardware_driver` 相同，manifest
+中的 `plugin_type` 为 `gripper_driver`，资源键为 `gripper_params`。平台侧固定使用具名
+`sensor_msgs/msg/JointState`：
+
+```yaml
+humanoid_gripper_runtime:
+  ros__parameters:
+    plugin_class: humanoid_gripper/RosTopicGripperDriver
+    platform_gripper_state_topic: /hc_teleop/gripper_states
+    platform_gripper_command_topic: /hc_teleop/gripper_commands
+    control_frequency_hz: 50.0
+    gripper_names: [left_gripper, right_gripper]
+    vendor_gripper_names: [left_finger_joint, right_finger_joint]
+    position_units: [m, m]
+```
+
+上例中的运行参数、映射数组和插件参数会由部署器完整校验。
+`humanoid_gripper/RosTopicGripperDriver` 可把已有夹爪驱动的 `JointState`、`Float64`
+或 `Float64MultiArray` 话题转换到平台接口。CAN、串口、SDK、Action 或灵巧手可在
+`humanoid_gripper` 包中继续添加新的插件类，无需修改机械臂驱动。
 
 ## robot_model 插件
 
@@ -135,13 +161,12 @@ name: My complete robot
 plugins:
   hardware_driver: my_robot_driver
   robot_model: my_robot_model
+  gripper_driver: my_gripper_driver  # 可选
 ```
 
-部署清单时，manager 会确认两个插件均已部署，并交叉检查 driver 的逻辑关节集合与 model 的运动
-关节集合。`resolve my_robot` 返回 driver `.so`、插件 XML、driver YAML、URDF 和所有 motion 资源的
-绝对路径。
-
-以后增加底盘、夹爪时，在插件类型和组合槽位中扩展，不把它们塞进 URDF 插件。
+部署清单时，manager 会确认组件均已部署，并分别检查手臂关节契约以及夹爪运行时与
+`hc_teleop_recv` 的具名话题契约。`resolve my_robot` 返回两个运行时各自的 `.so`、插件 XML、
+参数文件以及模型和 motion 资源；两类动态库环境不会互相合并。
 
 ## 打包、部署、启动
 
@@ -152,14 +177,17 @@ ros2 run humanoid_manager humanoid_pluginctl.py pack STAGED_DIR output.zip
 ros2 run humanoid_manager humanoid_pluginctl.py validate output.zip
 ```
 
-目标机先部署驱动和模型插件：
+目标机先部署机械臂驱动、模型和可选夹爪插件：
 
 ```bash
 ros2 run humanoid_manager humanoid_pluginctl.py deploy driver.zip
 ros2 run humanoid_manager humanoid_pluginctl.py deploy model.zip
+ros2 run humanoid_manager humanoid_pluginctl.py deploy gripper.zip
 ```
 
-随后在网页“机器人配置”中选择驱动与模型，填写机器人 ID 和名称。管理器会创建独立配置副本，并在保存、应用时生成和部署内部组合清单；用户不需要生成、编辑或导入 composition ZIP。CLI 输出 JSON，部署前需要停止正在使用目标插件的进程。
+随后在网页“机器人配置”中选择机械臂驱动、模型和可选夹爪插件，填写机器人 ID 和名称。
+管理器会创建独立配置副本，并在保存、应用时生成和部署内部组合清单；用户不需要生成、编辑
+或导入 composition ZIP。CLI 输出 JSON，部署前需要停止正在使用目标插件的进程。
 
 ## OpenArmX 参考产物
 
@@ -172,6 +200,12 @@ python3 src/openarmx_driver/tools/create_deployment_bundle.py \
 python3 src/openarmx_description/tools/create_deployment_bundle.py \
   deploy_artifacts/openarmx-v10-model.zip
 
+python3 src/humanoid_gripper/tools/create_deployment_bundle.py \
+  "$(ros2 pkg prefix humanoid_gripper)" deploy_artifacts/openarmx-gripper.zip \
+  --config openarmx_v10_bimanual.yaml \
+  --plugin-id openarmx_v10_bimanual_gripper
+
 ```
 
-导入 OpenArmX 驱动与模型两个产物后，直接在机器人页面新建配置。目标机不安装 `openarmx_driver` 或 `openarmx_description` 源码包。
+导入 OpenArmX 手臂驱动、模型和夹爪三个产物后，直接在机器人页面新建配置。目标机不安装
+`openarmx_driver`、`openarmx_description` 或 `humanoid_gripper` 源码包。

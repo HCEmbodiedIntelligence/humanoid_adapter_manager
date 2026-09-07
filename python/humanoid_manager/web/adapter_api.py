@@ -67,7 +67,7 @@ def register_adapter_routes(app, store, runtime):
         if status.get("state") != "running" or status.get("graph_age", 100) > 5:
             raise web.HTTPConflict(text="尚未取得新鲜 ROS 节点状态，无法确认机器人已停止；可先保存配置")
         names = {item["name"] for item in status.get("discovered_nodes", [])}
-        if names & {"humanoid_driver_runtime", "humanoid_motion_control", "humanoid_configuration_status", "hc_teleop_recv", "timestamp_adapter"}:
+        if names & {"humanoid_driver_runtime", "humanoid_gripper_runtime", "humanoid_motion_control", "humanoid_configuration_status", "hc_teleop_recv", "timestamp_adapter"}:
             raise web.HTTPConflict(text="机器人节点仍在运行，请停止对应机器人的启动进程后再应用配置")
 
     async def catalog(_request):
@@ -78,7 +78,7 @@ def register_adapter_routes(app, store, runtime):
 
     async def create(request):
         data = await request.json()
-        allowed = {"robot_id", "name", "source_robot", "driver_id", "model_id", "source_workspace"}
+        allowed = {"robot_id", "name", "source_robot", "driver_id", "model_id", "gripper_id", "source_workspace"}
         if not isinstance(data, dict) or set(data) - allowed:
             raise web.HTTPBadRequest(text="无效的机器人创建参数")
         async with operation_lock:

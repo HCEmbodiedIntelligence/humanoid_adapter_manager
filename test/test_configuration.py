@@ -7,13 +7,14 @@ import pytest
 from humanoid_manager.configuration import ConfigurationManager, ConfigurationConflict, resolve_initial_pose
 from humanoid_manager.deployment import DeploymentError, deploy_archive, pack_directory, resolve_robot_deployment
 from humanoid_manager.runtime_state import configuration_identity, deployment_lock
-from test_deployment_plugins import _hardware_tree, _model_tree, _composition_tree
+from test_deployment_plugins import _hardware_tree, _gripper_tree, _model_tree, _composition_tree
 
 
 @pytest.fixture
 def manager(tmp_path):
     root = tmp_path / 'deployed'
-    for name, factory in [('driver', _hardware_tree), ('model', _model_tree), ('robot', _composition_tree)]:
+    for name, factory in [('driver', _hardware_tree), ('model', _model_tree),
+                          ('gripper', _gripper_tree), ('robot', _composition_tree)]:
         archive = pack_directory(factory(tmp_path / name), tmp_path / f'{name}.zip')
         deploy_archive(archive, root)
     return ConfigurationManager(root, tmp_path / 'state')
@@ -129,6 +130,56 @@ def test_add_receiver_resource_and_restore_without_repacking_model(manager):
     restored=manager.validate('lab',restored['etag'],save=True)
     manager.apply('lab',restored['latest'],restored['etag'])
     assert 'hc_teleop_config' not in resolve_robot_deployment(manager.plugin_root,'lab').resources
+
+
+def test_attach_configure_export_and_remove_gripper_from_existing_robot(manager, tmp_path):
+    robot = create(manager)
+    assert robot['draft']['gripper_driver'] is None
+    manager.apply('lab', robot['latest'], robot['etag'])
+    catalog = manager.catalog()
+    template = catalog['gripper_drivers']['fake_gripper']['template']
+    document = copy.deepcopy(robot['draft'])
+    document['gripper_driver'] = {
+        'plugin_id': 'fake_gripper',
+        'name': catalog['gripper_drivers']['fake_gripper']['name'],
+    }
+    document['resources']['gripper_params'] = copy.deepcopy(template)
+    document['resources']['hc_teleop_config'] = {
+        'schema_version': 1,
+        'adapter': {'robot_id': 'lab'},
+        'channels': [],
+        'grippers': [{
+            'id': 'left_gripper',
+            'command_type': 'joint_state',
+            'command_topic': '/hc_teleop/gripper_commands',
+            'feedback_type': 'joint_state',
+            'feedback_topic': '/hc_teleop/gripper_states',
+            'joint_name': 'left_gripper',
+            'position_unit': 'm',
+        }],
+    }
+    robot = manager.draft('lab', document, robot['etag'])
+    robot = manager.validate('lab', robot['etag'], save=True)
+    manager.apply('lab', robot['latest'], robot['etag'])
+    deployment = resolve_robot_deployment(manager.plugin_root, 'lab')
+    assert deployment.gripper_class == 'fake_gripper/FakeGripperDriver'
+    assert deployment.resources['gripper_params'].is_file()
+    assert (manager.plugin_root / 'gripper_drivers/lab.gripper').is_dir()
+
+    exported = tmp_path / 'with-gripper.zip'
+    manager.export('lab', robot['latest'], exported)
+    imported = manager.import_workspace(exported, 'gripper_copy', '夹爪副本')
+    assert imported['draft']['resources']['gripper_params'] == robot['draft']['resources']['gripper_params']
+    assert imported['draft']['gripper_driver'] is not None
+
+    document = copy.deepcopy(robot['draft'])
+    document['gripper_driver'] = None
+    document['resources'].pop('gripper_params')
+    document['resources'].pop('hc_teleop_config')
+    robot = manager.draft('lab', document, robot['etag'])
+    robot = manager.validate('lab', robot['etag'], save=True)
+    manager.apply('lab', robot['latest'], robot['etag'])
+    assert resolve_robot_deployment(manager.plugin_root, 'lab').gripper_class is None
 
 
 def test_robot_camera_configuration_is_versioned_deployed_and_exported(manager, tmp_path):

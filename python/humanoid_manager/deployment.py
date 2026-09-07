@@ -36,10 +36,12 @@ _PACKAGE_URI = re.compile(r"^package://([A-Za-z][A-Za-z0-9_-]*)/(.+)$")
 
 _TYPE_DIR = {
     "hardware_driver": "hardware_drivers",
+    "gripper_driver": "gripper_drivers",
     "robot_model": "robot_models",
     "robot_composition": "robots",
 }
 _DRIVER_RESOURCE_REQUIRED = {"driver_params"}
+_GRIPPER_RESOURCE_REQUIRED = {"gripper_params"}
 _MODEL_RESOURCE_REQUIRED = {
     "motion_params",
     "sdk_config",
@@ -63,8 +65,12 @@ class ResolvedDeployment:
     driver_class: str
     driver_plugin_xml_paths: tuple[Path, ...]
     driver_ament_prefixes: tuple[Path, ...]
+    gripper_class: str | None
+    gripper_plugin_xml_paths: tuple[Path, ...]
+    gripper_ament_prefixes: tuple[Path, ...]
     resource_ament_prefixes: tuple[Path, ...]
     library_paths: tuple[Path, ...]
+    gripper_library_paths: tuple[Path, ...]
 
     def resource_environment(
         self, inherited: dict[str, str] | None = None
@@ -90,6 +96,21 @@ class ResolvedDeployment:
             )
         return result
 
+    def gripper_environment(
+        self, inherited: dict[str, str] | None = None
+    ) -> dict[str, str]:
+        base = os.environ if inherited is None else inherited
+        result: dict[str, str] = {}
+        if self.gripper_ament_prefixes:
+            result["AMENT_PREFIX_PATH"] = _prepend_paths(
+                self.gripper_ament_prefixes, base.get("AMENT_PREFIX_PATH", "")
+            )
+        if self.gripper_library_paths:
+            result["LD_LIBRARY_PATH"] = _prepend_paths(
+                self.gripper_library_paths, base.get("LD_LIBRARY_PATH", "")
+            )
+        return result
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "robot_id": self.robot_id,
@@ -101,11 +122,22 @@ class ResolvedDeployment:
             "driver_ament_prefixes": [
                 str(path) for path in self.driver_ament_prefixes
             ],
+            "gripper_class": self.gripper_class,
+            "gripper_plugin_xml_paths": [
+                str(path) for path in self.gripper_plugin_xml_paths
+            ],
+            "gripper_ament_prefixes": [
+                str(path) for path in self.gripper_ament_prefixes
+            ],
             "resource_ament_prefixes": [
                 str(path) for path in self.resource_ament_prefixes
             ],
             "library_paths": [str(path) for path in self.library_paths],
+            "gripper_library_paths": [
+                str(path) for path in self.gripper_library_paths
+            ],
             "driver_environment": self.environment(),
+            "gripper_environment": self.gripper_environment(),
             "resource_environment": self.resource_environment(),
         }
 
@@ -217,10 +249,18 @@ def _validate_plugin_manifest(document: Any, plugin_type: str) -> dict[str, Any]
     return manifest
 
 
-def validate_hardware_tree(root: Path, *, check_linkage: bool = False) -> dict[str, Any]:
+def _validate_binary_driver_tree(
+    root: Path,
+    *,
+    plugin_type: str,
+    label: str,
+    base_class_type: str,
+    configuration_validator,
+    check_linkage: bool = False,
+) -> dict[str, Any]:
     root = root.resolve()
     manifest = _validate_plugin_manifest(
-        _load_yaml(root / "manifest.yaml", "hardware manifest"), "hardware_driver"
+        _load_yaml(root / "manifest.yaml", f"{label} manifest"), plugin_type
     )
     required = {
         "schema_version",
@@ -237,25 +277,25 @@ def validate_hardware_tree(root: Path, *, check_linkage: bool = False) -> dict[s
         "resources",
     }
     optional: set[str] = set()
-    _require_closed_mapping(manifest, required, optional, "hardware manifest")
+    _require_closed_mapping(manifest, required, optional, f"{label} manifest")
 
     compatibility = _require_closed_mapping(
         manifest["compatibility"],
         {"ros_distro", "architecture", "driver_interface_abi"},
         set(),
-        "hardware compatibility",
+        f"{label} compatibility",
     )
     if compatibility["ros_distro"] != SUPPORTED_ROS_DISTRO:
         raise DeploymentError(
-            f"driver targets ROS {compatibility['ros_distro']}, expected {SUPPORTED_ROS_DISTRO}"
+            f"{label} targets ROS {compatibility['ros_distro']}, expected {SUPPORTED_ROS_DISTRO}"
         )
     expected_arch = _normalize_architecture(platform.machine())
     if _normalize_architecture(_require_text(
         compatibility["architecture"], "compatibility.architecture"
     )) != expected_arch:
-        raise DeploymentError("driver architecture does not match this host")
+        raise DeploymentError(f"{label} architecture does not match this host")
     if compatibility["driver_interface_abi"] != DRIVER_INTERFACE_ABI:
-        raise DeploymentError("driver_interface ABI is incompatible")
+        raise DeploymentError(f"{label} driver_interface ABI is incompatible")
 
     package_name = _require_text(manifest["package_name"], "package_name")
     if not _SAFE_PACKAGE.fullmatch(package_name):
@@ -271,18 +311,18 @@ def validate_hardware_tree(root: Path, *, check_linkage: bool = False) -> dict[s
     except ValueError as error:
         raise DeploymentError("plugin_xml must be inside the exported package share") from error
     if library.parent != prefix / "lib" or library.suffix != ".so":
-        raise DeploymentError("hardware library must be a .so directly inside ament_prefix/lib")
+        raise DeploymentError(f"{label} library must be a .so directly inside ament_prefix/lib")
     bundled_libraries = [path for path in (prefix / "lib").iterdir() if path.is_file()]
     if bundled_libraries != [library]:
         raise DeploymentError(
-            "hardware bundle must contain only its declared plugin library; "
+            f"{label} bundle must contain only its declared plugin library; "
             "install third-party dependencies in standard system locations"
         )
 
     package_marker = prefix / "share/ament_index/resource_index/packages" / package_name
     package_xml = prefix / "share" / package_name / "package.xml"
     if not package_marker.is_file() or not package_xml.is_file():
-        raise DeploymentError("hardware bundle does not contain a complete ament package prefix")
+        raise DeploymentError(f"{label} bundle does not contain a complete ament package prefix")
     if package_xml.stat().st_size > MAX_CONFIG_BYTES:
         raise DeploymentError("deployed package.xml exceeds the configuration size limit")
     if plugin_xml.stat().st_size > MAX_CONFIG_BYTES:
@@ -309,10 +349,8 @@ def validate_hardware_tree(root: Path, *, check_linkage: bool = False) -> dict[s
                 matching_classes.append(class_node)
     if len(matching_classes) != 1:
         raise DeploymentError("plugin XML must declare plugin_class exactly once")
-    if matching_classes[0].attrib.get("base_class_type") != (
-        "humanoid_driver_interface::RobotDriverPlugin"
-    ):
-        raise DeploymentError("hardware plugin uses the wrong base_class_type")
+    if matching_classes[0].attrib.get("base_class_type") != base_class_type:
+        raise DeploymentError(f"{label} plugin uses the wrong base_class_type")
     expected_library_names = {
         library.stem,
         library.stem.removeprefix("lib"),
@@ -323,7 +361,7 @@ def validate_hardware_tree(root: Path, *, check_linkage: bool = False) -> dict[s
     try:
         with library.open("rb") as stream:
             if stream.read(4) != b"\x7fELF":
-                raise DeploymentError("hardware library is not an ELF shared object")
+                raise DeploymentError(f"{label} library is not an ELF shared object")
     except OSError as error:
         raise DeploymentError(f"failed to inspect hardware library: {error}") from error
 
@@ -345,9 +383,9 @@ def validate_hardware_tree(root: Path, *, check_linkage: bool = False) -> dict[s
             or "not found" in detail
             or "undefined symbol:" in detail
         ):
-            raise DeploymentError(f"hardware plugin dependency check failed: {detail}")
+            raise DeploymentError(f"{label} plugin dependency check failed: {detail}")
 
-    resources, joint_names = _validate_driver_configuration(root, manifest)
+    resources, metadata = configuration_validator(root, manifest)
 
     result = dict(manifest)
     result["_root"] = root
@@ -355,8 +393,8 @@ def validate_hardware_tree(root: Path, *, check_linkage: bool = False) -> dict[s
     result["_plugin_xml"] = plugin_xml
     result["_library"] = library
     result["_resources"] = resources
-    result["_joint_names"] = joint_names
-    result["_deployment_type"] = "hardware_driver"
+    result.update(metadata)
+    result["_deployment_type"] = plugin_type
     result["_deployment_id"] = manifest["plugin_id"]
     return result
 
@@ -399,9 +437,80 @@ def _finite_number_list(value: Any, label: str, size: int) -> list[float]:
     return [float(item) for item in value]
 
 
+def _plugin_parameter_map(value: Any, label: str) -> dict[str, str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise DeploymentError(f"{label} must be a string list")
+    result: dict[str, str] = {}
+    for entry in value:
+        key, separator, item_value = entry.partition("=")
+        if not separator or not key or not item_value:
+            raise DeploymentError(f"{label} entries must use non-empty key=value")
+        if key in result:
+            raise DeploymentError(f"{label} contains duplicate key '{key}'")
+        result[key] = item_value
+    return result
+
+
+def _finite_parameter(parameters: dict[str, str], key: str) -> float:
+    try:
+        value = float(parameters[key])
+    except (KeyError, ValueError) as error:
+        raise DeploymentError(f"gripper plugin parameter '{key}' must be a number") from error
+    if not math.isfinite(value):
+        raise DeploymentError(f"gripper plugin parameter '{key}' must be finite")
+    return value
+
+
+def _validate_ros_topic_gripper_parameters(
+    parameters: dict[str, str], names: list[str]
+) -> None:
+    allowed = {"feedback_timeout_s", "startup_grace_s"}
+    for key in ("feedback_timeout_s", "startup_grace_s"):
+        if key in parameters and _finite_parameter(parameters, key) <= 0.0:
+            raise DeploymentError(f"gripper plugin parameter '{key}' must be positive")
+    for name in names:
+        prefix = f"{name}."
+        fields = {
+            "command_topic",
+            "command_type",
+            "feedback_topic",
+            "feedback_type",
+            "min_position",
+            "max_position",
+        }
+        keys = {prefix + field for field in fields}
+        missing = keys - parameters.keys()
+        if missing:
+            raise DeploymentError(
+                "gripper plugin parameters are missing keys: "
+                + ", ".join(sorted(missing))
+            )
+        allowed.update(keys)
+        command_topic = parameters[prefix + "command_topic"]
+        feedback_topic = parameters[prefix + "feedback_topic"]
+        if command_topic == feedback_topic:
+            raise DeploymentError(f"gripper '{name}' command and feedback topics must differ")
+        if parameters[prefix + "command_type"] not in {
+            "joint_state", "float64", "float64_multi_array"
+        }:
+            raise DeploymentError(f"gripper '{name}' has unsupported command_type")
+        if parameters[prefix + "feedback_type"] not in {"joint_state", "float64"}:
+            raise DeploymentError(f"gripper '{name}' has unsupported feedback_type")
+        minimum = _finite_parameter(parameters, prefix + "min_position")
+        maximum = _finite_parameter(parameters, prefix + "max_position")
+        if minimum >= maximum:
+            raise DeploymentError(f"gripper '{name}' min_position must be below max_position")
+    unknown = parameters.keys() - allowed
+    if unknown:
+        raise DeploymentError(
+            "gripper plugin parameters contain unknown keys: "
+            + ", ".join(sorted(unknown))
+        )
+
+
 def _validate_driver_configuration(
     root: Path, manifest: dict[str, Any]
-) -> tuple[dict[str, Path], list[str]]:
+) -> tuple[dict[str, Path], dict[str, Any]]:
     resources_node = _require_closed_mapping(
         manifest["resources"], _DRIVER_RESOURCE_REQUIRED, set(), "driver resources"
     )
@@ -442,7 +551,96 @@ def _validate_driver_configuration(
             abs(value) < 1.0e-12 for value in numbers
         ):
             raise DeploymentError("driver vendor_to_logical_scales cannot contain zero")
-    return resources, joint_names
+    return resources, {"_joint_names": joint_names}
+
+
+def _validate_gripper_configuration(
+    root: Path, manifest: dict[str, Any]
+) -> tuple[dict[str, Path], dict[str, Any]]:
+    resources_node = _require_closed_mapping(
+        manifest["resources"], _GRIPPER_RESOURCE_REQUIRED, set(), "gripper resources"
+    )
+    resources = {
+        key: _resolve_member(root, value, f"resources.{key}")
+        for key, value in resources_node.items()
+    }
+    parameters = _ros_parameters(
+        _load_yaml(resources["gripper_params"], "gripper parameters"),
+        "humanoid_gripper_runtime",
+        "gripper parameters",
+    )
+    if "plugin_xml_paths" in parameters:
+        raise DeploymentError("gripper YAML must not override managed plugin_xml_paths")
+    if parameters.get("plugin_class") != manifest["plugin_class"]:
+        raise DeploymentError("gripper YAML plugin_class differs from the gripper manifest")
+    names = _string_list(parameters.get("gripper_names"), "gripper gripper_names")
+    vendor_names = _text_list(
+        parameters.get("vendor_gripper_names"), "gripper vendor_gripper_names"
+    )
+    units = parameters.get("position_units")
+    if (
+        len(vendor_names) != len(names)
+        or not isinstance(units, list)
+        or len(units) != len(names)
+        or any(unit not in {"m", "rad"} for unit in units)
+    ):
+        raise DeploymentError(
+            "gripper vendor_gripper_names and position_units must match gripper_names"
+        )
+    if len(set(vendor_names)) != len(vendor_names):
+        raise DeploymentError("gripper vendor_gripper_names contains duplicates")
+    for parameter_name, default in (
+        ("vendor_to_logical_scales", [1.0] * len(names)),
+        ("vendor_to_logical_offsets", [0.0] * len(names)),
+    ):
+        values = _finite_number_list(
+            parameters.get(parameter_name, default), f"gripper {parameter_name}", len(names)
+        )
+        if parameter_name == "vendor_to_logical_scales" and any(
+            abs(value) < 1.0e-12 for value in values
+        ):
+            raise DeploymentError("gripper vendor_to_logical_scales cannot contain zero")
+    state_topic = _require_text(
+        parameters.get("platform_gripper_state_topic"), "platform_gripper_state_topic"
+    )
+    command_topic = _require_text(
+        parameters.get("platform_gripper_command_topic"), "platform_gripper_command_topic"
+    )
+    if state_topic == command_topic:
+        raise DeploymentError("gripper platform state and command topics must differ")
+    plugin_parameters = _plugin_parameter_map(
+        parameters.get("plugin_parameters", []), "gripper plugin_parameters"
+    )
+    if manifest["plugin_class"] == "humanoid_gripper/RosTopicGripperDriver":
+        _validate_ros_topic_gripper_parameters(plugin_parameters, names)
+    return resources, {
+        "_gripper_names": names,
+        "_gripper_position_units": dict(zip(names, units)),
+        "_gripper_state_topic": state_topic,
+        "_gripper_command_topic": command_topic,
+    }
+
+
+def validate_hardware_tree(root: Path, *, check_linkage: bool = False) -> dict[str, Any]:
+    return _validate_binary_driver_tree(
+        root,
+        plugin_type="hardware_driver",
+        label="hardware",
+        base_class_type="humanoid_driver_interface::RobotDriverPlugin",
+        configuration_validator=_validate_driver_configuration,
+        check_linkage=check_linkage,
+    )
+
+
+def validate_gripper_tree(root: Path, *, check_linkage: bool = False) -> dict[str, Any]:
+    return _validate_binary_driver_tree(
+        root,
+        plugin_type="gripper_driver",
+        label="gripper",
+        base_class_type="humanoid_driver_interface::GripperDriverPlugin",
+        configuration_validator=_validate_gripper_configuration,
+        check_linkage=check_linkage,
+    )
 
 
 def validate_model_tree(root: Path) -> dict[str, Any]:
@@ -732,11 +930,13 @@ def validate_composition_tree(root: Path) -> dict[str, Any]:
     plugins = _require_closed_mapping(
         manifest["plugins"],
         {"hardware_driver", "robot_model"},
-        set(),
+        {"gripper_driver"},
         "robot composition plugins",
     )
     _require_id(plugins["hardware_driver"], "plugins.hardware_driver")
     _require_id(plugins["robot_model"], "plugins.robot_model")
+    if "gripper_driver" in plugins:
+        _require_id(plugins["gripper_driver"], "plugins.gripper_driver")
     return dict(
         manifest,
         _root=root,
@@ -812,6 +1012,8 @@ def validate_tree(
         plugin_type = document.get("plugin_type")
         if plugin_type == "hardware_driver":
             return validate_hardware_tree(root, check_linkage=check_linkage)
+        if plugin_type == "gripper_driver":
+            return validate_gripper_tree(root, check_linkage=check_linkage)
         if plugin_type == "robot_model":
             return validate_model_tree(root)
         raise DeploymentError("manifest plugin_type is unsupported")
@@ -936,11 +1138,57 @@ def _validate_hardware_model_contract(
         )
 
 
+def _validate_gripper_receiver_contract(
+    gripper: dict[str, Any] | None, model: dict[str, Any]
+) -> None:
+    receiver_path = model["_resources"].get("hc_teleop_config")
+    if receiver_path is None:
+        return
+    from hc_teleop_recv.config import load_config
+
+    receiver = load_config(receiver_path)
+    if not receiver.grippers:
+        return
+    if gripper is None:
+        raise DeploymentError(
+            "hc_teleop_config defines grippers but robot composition has no gripper_driver"
+        )
+    names = set(gripper["_gripper_names"])
+    units = gripper["_gripper_position_units"]
+    used_names: set[str] = set()
+    for entry in receiver.grippers:
+        if entry.command_type != "joint_state" or entry.feedback_type != "joint_state":
+            raise DeploymentError(
+                f"{entry.id}: managed gripper plugins require JointState platform endpoints"
+            )
+        if entry.command_topic != gripper["_gripper_command_topic"]:
+            raise DeploymentError(
+                f"{entry.id}: command_topic differs from the gripper plugin platform topic"
+            )
+        if entry.feedback_topic != gripper["_gripper_state_topic"]:
+            raise DeploymentError(
+                f"{entry.id}: feedback_topic differs from the gripper plugin platform topic"
+            )
+        if entry.joint_name not in names:
+            raise DeploymentError(
+                f"{entry.id}: joint_name is absent from the gripper plugin"
+            )
+        if entry.joint_name in used_names:
+            raise DeploymentError(
+                f"{entry.id}: each logical gripper may have only one teleoperation mapping"
+            )
+        used_names.add(entry.joint_name)
+        if entry.position_unit != units[entry.joint_name]:
+            raise DeploymentError(
+                f"{entry.id}: position_unit differs from the gripper plugin mapping"
+            )
+
+
 def _resolve_composition_components(
     plugin_root: Path,
     composition: dict[str, Any],
     replacements: dict[tuple[str, str], dict[str, Any]] | None = None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
     replacements = replacements or {}
     plugins = composition["plugins"]
 
@@ -953,8 +1201,10 @@ def _resolve_composition_components(
 
     hardware = load("hardware_driver")
     model = load("robot_model")
+    gripper = load("gripper_driver") if "gripper_driver" in plugins else None
     _validate_hardware_model_contract(hardware, model)
-    return hardware, model
+    _validate_gripper_receiver_contract(gripper, model)
+    return hardware, model, gripper
 
 
 def _validate_component_dependents(
@@ -983,6 +1233,7 @@ def deploy_archive(
     plugin_root: Path,
     *,
     check_linkage: bool = True,
+    check_dependents: bool = True,
 ) -> Path:
     plugin_root = plugin_root.resolve()
     staging_parent = plugin_root / ".staging"
@@ -996,10 +1247,11 @@ def deploy_archive(
         manifest = validate_tree(incoming, check_linkage=check_linkage)
         plugin_type = manifest["_deployment_type"]
         plugin_id = manifest["_deployment_id"]
-        if plugin_type == "robot_composition":
-            _resolve_composition_components(plugin_root, manifest)
-        else:
-            _validate_component_dependents(plugin_root, plugin_type, manifest)
+        if check_dependents:
+            if plugin_type == "robot_composition":
+                _resolve_composition_components(plugin_root, manifest)
+            else:
+                _validate_component_dependents(plugin_root, plugin_type, manifest)
 
         destination = plugin_root / _TYPE_DIR[plugin_type] / plugin_id
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1033,15 +1285,22 @@ def resolve_robot_deployment(
     plugin_root = plugin_root.resolve()
     robot_root = _deployed_path(plugin_root, "robot_composition", robot_id)
     robot = validate_tree(robot_root)
-    hardware, model = _resolve_composition_components(plugin_root, robot)
+    hardware, model, gripper = _resolve_composition_components(plugin_root, robot)
     xml_paths = (hardware["_plugin_xml"],)
     prefixes = [hardware["_ament_prefix"]]
     resource_prefixes: list[Path] = []
     if model.get("_ament_prefix") is not None:
         resource_prefixes.append(model["_ament_prefix"])
     library_paths = [hardware["_ament_prefix"] / "lib"]
+    gripper_xml_paths = (gripper["_plugin_xml"],) if gripper is not None else ()
+    gripper_prefixes = (gripper["_ament_prefix"],) if gripper is not None else ()
+    gripper_library_paths = (
+        (gripper["_ament_prefix"] / "lib",) if gripper is not None else ()
+    )
     resources = dict(model["_resources"])
     resources.update(hardware["_resources"])
+    if gripper is not None:
+        resources.update(gripper["_resources"])
 
     return ResolvedDeployment(
         robot_id=robot["robot_id"],
@@ -1051,8 +1310,12 @@ def resolve_robot_deployment(
         driver_class=hardware["plugin_class"],
         driver_plugin_xml_paths=xml_paths,
         driver_ament_prefixes=tuple(prefixes),
+        gripper_class=gripper["plugin_class"] if gripper is not None else None,
+        gripper_plugin_xml_paths=gripper_xml_paths,
+        gripper_ament_prefixes=gripper_prefixes,
         resource_ament_prefixes=tuple(resource_prefixes),
         library_paths=tuple(library_paths),
+        gripper_library_paths=gripper_library_paths,
     )
 
 
@@ -1060,6 +1323,7 @@ def list_deployed(plugin_root: Path) -> dict[str, Any]:
     plugin_root = plugin_root.resolve()
     result: dict[str, Any] = {
         "hardware_drivers": {},
+        "gripper_drivers": {},
         "robot_models": {},
         "robots": {},
     }

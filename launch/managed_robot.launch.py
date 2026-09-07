@@ -33,8 +33,10 @@ def _launch_registered_robot(context):
     identity = configuration_identity(plugin_root, robot_id)
     resources = deployment.resources
     driver_environment = deployment.environment()
+    gripper_environment = deployment.gripper_environment()
     resource_environment = deployment.resource_environment()
     start_driver = LaunchConfiguration("start_driver")
+    start_gripper = LaunchConfiguration("start_gripper")
     start_motion = LaunchConfiguration("start_motion")
     start_teleop = LaunchConfiguration("start_teleop")
     start_cameras = LaunchConfiguration("start_cameras")
@@ -78,6 +80,29 @@ def _launch_registered_robot(context):
         ),
     ]
 
+    if deployment.gripper_class:
+        actions.insert(
+            1,
+            Node(
+                package="humanoid_driver_runtime",
+                executable="humanoid_gripper_runtime_node",
+                name="humanoid_gripper_runtime",
+                output="screen",
+                parameters=[
+                    str(resources["gripper_params"]),
+                    {
+                        "plugin_class": deployment.gripper_class,
+                        "plugin_xml_paths": [
+                            str(path) for path in deployment.gripper_plugin_xml_paths
+                        ],
+                    },
+                ],
+                additional_env=gripper_environment,
+                condition=IfCondition(start_gripper),
+                on_exit=Shutdown(reason="humanoid gripper runtime exited"),
+            ),
+        )
+
     if "hc_teleop_config" in resources:
         actions.append(
             Node(
@@ -113,8 +138,14 @@ def _launch_registered_robot(context):
             )
         )
 
-    expected = [name for argument, name in (("start_driver", "humanoid_driver_runtime"),
-        ("start_motion", "humanoid_motion_control"), ("start_teleop", "hc_teleop_recv"))
+    expected_pairs = [
+        ("start_driver", "humanoid_driver_runtime"),
+        ("start_motion", "humanoid_motion_control"),
+        ("start_teleop", "hc_teleop_recv"),
+    ]
+    if deployment.gripper_class:
+        expected_pairs.append(("start_gripper", "humanoid_gripper_runtime"))
+    expected = [name for argument, name in expected_pairs
         if LaunchConfiguration(argument).perform(context).lower() in {"1", "true", "yes", "on"}]
     actions.append(Node(package="humanoid_manager", executable="configuration_status.py",
         name="humanoid_configuration_status", output="screen",
@@ -135,6 +166,7 @@ def generate_launch_description():
                 description="Adapter-manager deployment root.",
             ),
             DeclareLaunchArgument("start_driver", default_value="true"),
+            DeclareLaunchArgument("start_gripper", default_value="true"),
             DeclareLaunchArgument("start_motion", default_value="true"),
             DeclareLaunchArgument("start_teleop", default_value="true"),
             DeclareLaunchArgument("start_cameras", default_value="true"),
