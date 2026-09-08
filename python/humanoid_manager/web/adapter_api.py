@@ -88,9 +88,15 @@ def register_adapter_routes(app, store, runtime):
     async def action(request):
         data = await request.json()
         op = request.match_info["operation"]
-        allowed = {"draft": {"document", "etag"}, "validate": {"etag", "save"},
+        allowed = {"draft": {"document", "etag"}, "save": {"document", "etag"},
+                   "validate": {"etag", "save"},
                    "restore": {"etag", "revision"}, "apply": {"etag", "revision"}}
-        if op not in allowed or not isinstance(data, dict) or set(data) - allowed[op]:
+        keys = set(data) if isinstance(data, dict) else set()
+        valid_keys = (
+            keys in ({"etag"}, {"etag", "save"}) if op == "validate"
+            else op in allowed and keys == allowed[op]
+        )
+        if op not in allowed or not isinstance(data, dict) or not valid_keys:
             raise web.HTTPBadRequest(text="无效的配置操作")
         async with operation_lock:
             if op == "apply":

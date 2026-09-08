@@ -30,6 +30,29 @@ def create(manager):
     return manager.create('lab', '实验机器人', source_robot='test_robot')
 
 
+def test_single_save_validates_versions_and_normalizes_joint_space_channels(manager):
+    robot = create(manager)
+    previous_revision = robot['latest']
+    document = copy.deepcopy(robot['draft'])
+    document['name'] = '一次保存'
+    channel = document['resources']['channel_config']['channels'][0]
+    channel.update(base_frame='base', tip_frame='link2')
+    saved = manager.save('lab', document, robot['etag'])
+    assert saved['latest'] != previous_revision
+    assert saved['draft']['name'] == '一次保存'
+    assert 'base_frame' not in saved['draft']['resources']['channel_config']['channels'][0]
+    assert 'tip_frame' not in saved['draft']['resources']['channel_config']['channels'][0]
+
+    invalid = copy.deepcopy(saved['draft'])
+    invalid['resources']['motion_params']['humanoid_motion_control']['ros__parameters'][
+        'groups.arm'] = ['missing_joint', 'joint2']
+    with pytest.raises(DeploymentError):
+        manager.save('lab', invalid, saved['etag'])
+    unchanged = manager.get('lab')
+    assert unchanged['latest'] == saved['latest']
+    assert unchanged['draft'] == saved['draft']
+
+
 def test_direct_gripper_import_rejects_other_plugin_types_before_deploy(manager, tmp_path):
     archive = pack_directory(_hardware_tree(tmp_path / 'other-driver'), tmp_path / 'driver.zip')
     before = sorted(path.name for path in (manager.plugin_root / 'hardware_drivers').iterdir())

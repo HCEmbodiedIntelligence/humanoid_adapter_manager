@@ -171,7 +171,16 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
     const advanced=el('details');advanced.append(el('summary','高级：SDK 参数（保留原配置单位）'));const fields=el('div');objectFields(fields,selected.draft.resources.sdk_config,['joint_groups']);advanced.append(fields);form.append(advanced);}
   function renderChannels(form){
     const channels=selected.draft.resources.channel_config.channels,tools=selected.draft.resources.tool_config.tools;
-    const add=button('新增运动通道',()=>{channels.push({name:`channel_${channels.length+1}`,kind:'servo_p',endpoint:`/teleop/channel_${channels.length+1}`,priority:50,group:params('motion_params').joint_group_names[0],base_frame:selected.model_info.links[0]||'',tip_frame:tools[0]?.name||'',fk_pose_topic:`/teleop/channel_${channels.length+1}/fk_pose`});markDirty();renderForm();});form.append(add);arrayFields(form,'channels',channels);
+    form.append(el('p','MoveJ 和 ServoJ 使用关节目标，不使用参考坐标系或末端坐标系；MoveL、MoveP 和 ServoP 才配置笛卡尔坐标系。','form-help'));
+    const add=button('新增运动通道',()=>{channels.push({name:`channel_${channels.length+1}`,kind:'servo_p',endpoint:`/teleop/channel_${channels.length+1}`,priority:50,group:params('motion_params').joint_group_names[0],base_frame:selected.model_info.links[0]||'',tip_frame:tools[0]?.name||'',fk_pose_topic:`/teleop/channel_${channels.length+1}/fk_pose`});markDirty();renderForm();});form.append(add);
+    channels.forEach((channel,index)=>{
+      const cartesian=['move_l','move_p','servo_p'].includes(channel.kind),field=el('fieldset'),heading=el('div',undefined,'row-heading');heading.append(el('h4',channel.name||`通道 ${index+1}`),button('移除',()=>{channels.splice(index,1);markDirty();renderForm();}));field.append(heading);
+      const grid=el('div',undefined,'parameter-grid'),addField=(key,options=null)=>grid.append(scalar(key,channel[key]??'',value=>{channel[key]=value;if(key==='kind'){const nextCartesian=['move_l','move_p','servo_p'].includes(value);if(nextCartesian){channel.base_frame??=selected.model_info.links[0]||'';channel.tip_frame??=tools[0]?.name||'';}else{delete channel.base_frame;delete channel.tip_frame;delete channel.fk_pose_topic;}queueMicrotask(renderForm);}},{options}));field.append(grid);
+      addField('name');addField('kind');addField('endpoint');addField('priority');addField('group');
+      if(cartesian){addField('base_frame');addField('tip_frame');addField('fk_pose_topic');}
+      else field.append(el('p','关节空间通道只读取关节分组；坐标系设置不会参与该运动。','form-help'));
+      form.append(field);
+    });
     const field=el('fieldset');field.append(el('legend','工具坐标'));arrayFields(field,'tools',tools);field.append(button('新增工具',()=>{tools.push({name:`tool_${tools.length+1}`,parent_frame:selected.model_info.links[0]||'',child_frame:`tool_${tools.length+1}`,translation_m:[0,0,0],rotation_xyzw:[0,0,0,1]});markDirty();renderForm();}));form.append(field);
   }
   function moveJChannels(){return (selected.draft.resources.channel_config?.channels||[]).filter(channel=>channel.kind==='move_j'&&channel.group);}
@@ -264,7 +273,7 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
   }
   function nextCameraId(prefix='camera'){let n=1;const cameras=selected.draft.cameras||(selected.draft.cameras=[]);while(cameras.some(c=>c.id===prefix+n))n++;return prefix+n;}
   async function syncCamerasToCapture(){
-    await persistDraft();
+    await saveRobotConfiguration(false);
     const capture=await api('/api/capture'),cfg=clone(capture.config);
     for(const [id,source] of Object.entries(cfg.sources))if(source.managed_robot_camera){delete cfg.sources[id];}
     const active=selected.draft.cameras.filter(c=>c.enabled);
@@ -320,7 +329,7 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
     $('#managedRobotName').value=selected.draft.name;setText('#robotDraftState',selected.diff.length?'草稿有修改':'已保存');setText('#robotSavedRevision',selected.latest);setText('#robotDeployedRevision',selected.deployed?.revision|| (selected.deployed?'外部部署':'尚未部署'));
     const tablist=$('#robotTabs');tablist.replaceChildren();for(const [id,title] of tabs){const b=button(title,()=>{tab=id;renderEditor();});b.setAttribute('role','tab');b.setAttribute('aria-selected',String(tab===id));tablist.append(b);}renderForm();
     const diff=$('#robotDiff');diff.replaceChildren();setText('#robotDiffCount',`${selected.diff.length} 项`);const t=table(['字段','已保存','当前草稿']);for(const change of selected.diff){const row=el('tr');row.append(el('td',change.path));for(const key of ['before','after']){const cell=el('td');cell.append(el('pre',JSON.stringify(change[key],null,2)));row.append(cell);}t.body.append(row);}diff.append(t.wrapper);
-    const history=$('#robotHistory');history.replaceChildren();for(const version of selected.history){const row=el('div');row.append(el('code',version.revision),el('time',new Date(version.created_at).toLocaleString()),button('恢复到草稿',()=>operation(async()=>{if(dirty&&!confirm('有未保存修改，恢复历史版本将替换当前草稿，是否继续？'))return;selected=await post(`${robotUrl()}/restore`,{revision:version.revision,etag:selected.etag});dirty=false;renderEditor();notify('历史版本已放入草稿，校验并保存后可应用');})));const link=el('a','导出配置包');link.href=`${robotUrl()}/export?revision=${encodeURIComponent(version.revision)}`;row.append(link);history.append(row);}
+    const history=$('#robotHistory');history.replaceChildren();for(const version of selected.history){const row=el('div');row.append(el('code',version.revision),el('time',new Date(version.created_at).toLocaleString()),button('加载到表单',()=>operation(async()=>{if(dirty&&!confirm('有未保存修改，加载历史版本将替换当前表单，是否继续？'))return;selected=await post(`${robotUrl()}/restore`,{revision:version.revision,etag:selected.etag});dirty=false;renderEditor();notify('历史版本已加载到表单，点击“保存配置”后可应用');})));const link=el('a','导出配置包');link.href=`${robotUrl()}/export?revision=${encodeURIComponent(version.revision)}`;row.append(link);history.append(row);}
   }
   async function selectRobot(id){if(dirty&&!confirm('当前表单有未保存修改，切换机器人将放弃这些修改，是否继续？'))return;selected=await api(`/api/adapters/robots/${encodeURIComponent(id)}`);dirty=false;renderCatalog();renderEditor();}
   function renderCatalog(){
@@ -331,7 +340,7 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
   async function refresh(){catalog=await api('/api/adapters');$('#managerError').classList.add('hidden');renderCatalog();if(!selected&&catalog.workspaces.length)await selectRobot(catalog.workspaces[0].robot_id);}
   async function open(){if(catalog||loading)return;loading=true;try{await refresh();}catch(error){const box=$('#managerError');box.textContent=error.message;box.className='notice error';}finally{loading=false;}}
   async function operation(fn){const buttons=$$('#robotEditor button'),disabled=buttons.map(b=>b.disabled);buttons.forEach(b=>b.disabled=true);try{return await fn();}catch(error){notify(error.message,true);}finally{buttons.forEach((b,i)=>b.disabled=disabled[i]);}}
-  async function persistDraft(){if(!selected)return;const invalid=$('#robotForm :invalid');if(invalid){invalid.reportValidity();throw new Error('请修正表单中的无效参数');}selected=await post(`${robotUrl()}/draft`,{document:selected.draft,etag:selected.etag});dirty=false;renderEditor();}
+  async function saveRobotConfiguration(showNotice=true){if(!selected)return;const invalid=$('#robotForm :invalid');if(invalid){invalid.reportValidity();throw new Error('请修正表单中的无效参数');}selected=await post(`${robotUrl()}/save`,{document:selected.draft,etag:selected.etag});dirty=false;renderEditor();await refresh();if(showNotice)notify('配置已校验并保存为新版本；应用后由下一次机器人启动加载');return selected;}
   function settingsLoaded(state){settings=state;setText('#settingsState',state.external_change?'外部修改，需重新读取':state.pending?'已保存，待应用':'已应用');$('#settingsState').classList.toggle('stale',state.pending||state.external_change);
     setText('#recordingConfigHint',state.pending?'配置已保存，运行中仍使用原配置；停止录制后点击“应用已保存配置”。':'运行中使用已保存配置。修改后先保存，再应用。');
     const history=$('#settingsHistory');history.replaceChildren();for(const version of state.history){const row=el('div');row.append(el('time',new Date(version.created_at*1000).toLocaleString()),button('恢复到表单',async()=>{try{const next=await post('/api/settings/restore',{etag:settings.etag,revision:version.revision});settingsLoaded(next);config=clone(next.draft);renderConfig();toast('历史配置已放入表单，保存并应用后生效');}catch(e){toast(e.message,true);}}));history.append(row);}
@@ -370,9 +379,7 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
   $('#managedImportKind').onchange=()=>{const workspace=$('#managedImportKind').value==='workspace';$('#managedImportIdentity').classList.toggle('hidden',!workspace);if(workspace)$('#managedImportExpectedType').value='';};
   $('#managedImportForm').onsubmit=async event=>{event.preventDefault();const b=event.submitter;b.disabled=true;try{const data=new FormData(event.target);if(data.get('kind')==='workspace'&&(!data.get('robot_id')||!data.get('name')))throw new Error('请填写新配置 ID 和名称');const result=await api('/api/adapters/import',{method:'POST',body:data});$('#managedImportDialog').close();await refresh();if(result.robot_id)await selectRobot(result.robot_id);else if(selected)renderForm();toast(result.plugin_type==='gripper_driver'?'夹爪插件已导入，可在列表中选择':'配置包已校验并导入');}catch(e){$('#managedImportError').textContent=e.message;}finally{b.disabled=false;}};
   $$('[data-close-dialog]').forEach(b=>b.onclick=()=>$('#'+b.dataset.closeDialog).close());
-  $('#saveRobotDraft').onclick=()=>operation(async()=>{await persistDraft();notify('草稿已保存，运行配置未改变');});
-  $('#validateRobot').onclick=()=>operation(async()=>{await persistDraft();const result=await post(`${robotUrl()}/validate`,{etag:selected.etag});notify(result.message);});
-  $('#saveRobotVersion').onclick=()=>operation(async()=>{await persistDraft();selected=await post(`${robotUrl()}/validate`,{etag:selected.etag,save:true});renderEditor();await refresh();notify('配置已校验并保存为新版本');});
+  $('#saveRobotConfig').onclick=()=>operation(()=>saveRobotConfiguration());
   $('#applyRobot').onclick=()=>operation(async()=>{const result=await post(`${robotUrl()}/apply`,{etag:selected.etag,revision:selected.latest});selected=await api(robotUrl());renderEditor();notify(`已部署 ${result.deployed.revision}，下一次启动机器人时加载`);});
   $('#applyConfig').onclick=applySettings;$('#applyRecording').onclick=applySettings;$('#loadRobotRecording').onclick=loadRecordingPlan;$('#storeRobotRecording').onclick=storeRecordingPlan;
   $('#reloadSettings').onclick=async()=>{try{const next=await api('/api/settings');settingsLoaded(next);config=clone(next.external_change?next.saved:next.draft);renderConfig();toast('已重新读取配置');}catch(e){toast(e.message,true);}};

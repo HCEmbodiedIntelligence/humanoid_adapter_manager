@@ -39,6 +39,7 @@ ROS CDR 预览需要本机安装对应消息类型。缺少自定义消息类型
 | `GET /api/settings` | 系统草稿、已保存配置、当前运行配置及版本标识 |
 | `POST /api/settings/{draft,save,apply,restore}` | 系统配置编辑、保存、应用与恢复 |
 | `GET /api/adapters` | 插件和机器人配置目录 |
+| `POST /api/adapters/robots/{id}/save` | 原子校验表单并保存一个新机器人版本 |
 | `POST /api/adapters/robots/{id}/joints/{joint}/jog` | 读取实测反馈后点动一个关节 |
 | `POST /api/adapters/robots/{id}/grippers/{name}/test` | 测试当前夹爪打开或闭合 |
 | `POST /api/recording/{start,stop,mark}` | 开始/停止录制与在线标记 |

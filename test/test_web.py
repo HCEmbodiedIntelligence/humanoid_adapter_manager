@@ -151,6 +151,26 @@ class ConfiguratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(blocked.status, 409)
         execute.assert_not_called()
 
+    async def test_robot_form_uses_one_atomic_save_operation(self):
+        document = {'name':'机器人','resources':{},'recording':{},'cameras':[],
+            'initial_poses':[],'gripper_driver':None}
+        expected = {'robot_id':'lab','latest':'r-fedcba9876543210','draft':document}
+        calls = []
+        async def fake_call(operation, **arguments):
+            calls.append((operation, arguments))
+            return expected
+        self.runtime.adapter_client.call = fake_call
+        response = await self.client.post('/api/adapters/robots/lab/save', json={
+            'document':document, 'etag':'current-etag'})
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], 'save')
+        self.assertEqual(calls[0][1]['robot_id'], 'lab')
+        self.assertEqual(calls[0][1]['etag'], 'current-etag')
+        invalid = await self.client.post('/api/adapters/robots/lab/save', json={})
+        self.assertEqual(invalid.status, 400)
+        self.assertEqual(await invalid.text(), '无效的配置操作')
+
     async def test_gripper_button_resolves_saved_plugin_and_checks_runtime_without_hardware(self):
         document = {'gripper_driver': {'plugin_id':'demo_gripper','name':'Demo gripper'},
             'resources': {

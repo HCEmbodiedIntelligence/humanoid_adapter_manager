@@ -470,6 +470,15 @@ def normalize_document(document):
     value.setdefault("cameras", [])
     value.setdefault("initial_poses", [])
     value.setdefault("gripper_driver", None)
+    resources = value.get("resources")
+    channel_config = resources.get("channel_config") if isinstance(resources, dict) else None
+    channels = channel_config.get("channels", []) if isinstance(channel_config, dict) else []
+    for channel in channels if isinstance(channels, list) else []:
+        if isinstance(channel, dict) and channel.get("kind") not in {
+                "move_l", "move_p", "servo_p"}:
+            channel.pop("base_frame", None)
+            channel.pop("tip_frame", None)
+            channel.pop("fk_pose_topic", None)
     return value
 
 
@@ -691,9 +700,10 @@ class ConfigurationManager:
             result["model_info"] = {"error": "URDF 尚未通过校验", "links": [], "joints": []}
         return result
 
-    def draft(self, robot_id, document, etag):
+    def _prepare_draft(self, index, document):
         if not isinstance(document, dict) or set(document) != {"name", "resources", "recording", "cameras", "initial_poses", "gripper_driver"}:
             raise DeploymentError("配置需包含 name、resources、cameras、initial_poses、gripper_driver 和 recording")
+        document = normalize_document(document)
         selection = validate_gripper_selection(document["gripper_driver"])
         has_gripper_resource = (
             isinstance(document.get("resources"), dict)
@@ -707,15 +717,40 @@ class ConfigurationManager:
             raise DeploymentError("配置包含无效数值") from error
         if len(encoded) > MAX_CONFIG_BYTES:
             raise DeploymentError("配置超过 16 MB")
+        optional = {"hc_teleop_config", "gripper_params"}
+        if (not isinstance(document["resources"], dict) or
+                set(document["resources"])-optional !=
+                set(index["draft"]["resources"])-optional):
+            raise DeploymentError("资源类型应与模型插件一致，请通过导入模型插件增减资源")
+        value = copy.deepcopy(document)
+        value["gripper_driver"] = selection
+        return value
+
+    def draft(self, robot_id, document, etag):
         with self.lock():
             index = self._read(robot_id)
             self._check_etag(index, etag)
-            optional = {"hc_teleop_config", "gripper_params"}
-            if not isinstance(document["resources"], dict) or set(document["resources"])-optional != set(index["draft"]["resources"])-optional:
-                raise DeploymentError("资源类型应与模型插件一致，请通过导入模型插件增减资源")
-            value = copy.deepcopy(document)
-            value["gripper_driver"] = selection
+            value = self._prepare_draft(index, document)
             index.update(draft=value, etag=uuid.uuid4().hex)
+            atomic_json(self._workspace(robot_id) / "index.json", index)
+        return self.get(robot_id)
+
+    def save(self, robot_id, document, etag):
+        """Validate the submitted form and create one new version atomically."""
+        with self.lock():
+            index = self._read(robot_id)
+            self._check_etag(index, etag)
+            value = self._prepare_draft(index, document)
+            candidate = copy.deepcopy(index)
+            candidate["draft"] = value
+            with tempfile.TemporaryDirectory(
+                    dir=self.state_root, prefix=".validate-") as temporary:
+                root = Path(temporary) / "root"
+                self._stage(robot_id, candidate, root)
+                revision = self._persist_revision(robot_id, root, value)
+            index.update(
+                draft=value, latest=revision, name=value["name"], etag=uuid.uuid4().hex
+            )
             atomic_json(self._workspace(robot_id) / "index.json", index)
         return self.get(robot_id)
 
@@ -954,7 +989,8 @@ class ConfigurationManager:
         op = request.get("operation")
         args = request.get("arguments", {})
         operations = {"catalog": self.catalog, "create": self.create, "get": self.get,
-            "draft": self.draft, "validate": self.validate, "restore": self.restore,
+            "draft": self.draft, "save": self.save, "validate": self.validate,
+            "restore": self.restore,
             "apply": self.apply, "export": self.export, "import_bundle": self.import_bundle,
             "import_workspace": self.import_workspace}
         if op not in operations or not isinstance(args, dict):

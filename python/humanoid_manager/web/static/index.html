@@ -15,14 +15,14 @@
         <div class="workspace-content">
           <div id="robotEmpty" class="empty-workspace"><span class="empty-symbol">↳</span><h2>创建机器人配置</h2><p>选择已导入的驱动和模型，随后在机器人页面配置关节、相机、底盘、夹爪与录制方案。</p><button id="emptyCreateRobot" class="primary">新建机器人配置</button></div>
           <div id="robotEditor" class="hidden">
-            <div class="revision-track"><span>编辑草稿 <b id="robotDraftState">已保存</b></span><span>已保存版本 <b id="robotSavedRevision">—</b></span><span>已部署版本 <b id="robotDeployedRevision">—</b></span></div>
-            <div class="editor-actions"><label>机器人名称<input id="managedRobotName" maxlength="100"></label><div class="button-row"><button id="saveRobotDraft">保存草稿</button><button id="validateRobot">校验配置</button><button class="primary" id="saveRobotVersion">保存新版本</button><button id="applyRobot">应用已保存版本</button></div></div>
-            <p class="form-help" id="robotApplyHint">保存保留编辑结果；应用会更新部署资源，下一次启动机器人时加载。</p>
+            <div class="revision-track"><span>表单状态 <b id="robotDraftState">已保存</b></span><span>已保存版本 <b id="robotSavedRevision">—</b></span><span>已部署版本 <b id="robotDeployedRevision">—</b></span></div>
+            <div class="editor-actions"><label>机器人名称<input id="managedRobotName" maxlength="100"></label><div><p>保存时自动校验并生成一个新版本。</p><div class="button-row"><button class="primary" id="saveRobotConfig">保存配置</button><button id="applyRobot">应用配置</button></div></div></div>
+            <p class="form-help" id="robotApplyHint">保存不会改变正在运行的机器人；应用后由下一次机器人启动加载。</p>
             <div id="robotOperationResult" class="notice hidden" role="status"></div>
             <div id="robotTabs" class="editor-tabs" role="tablist" aria-label="配置类别"></div>
             <div id="robotForm" class="panel robot-form" role="tabpanel"></div>
             <details class="panel changes-panel"><summary>查看修改内容 <span id="robotDiffCount"></span></summary><div id="robotDiff" class="table-wrap"></div></details>
-            <details class="panel changes-panel"><summary>历史版本与导出</summary><p>恢复会将历史内容放入草稿，校验并保存后再应用。</p><div id="robotHistory" class="history-list"></div></details>
+            <details class="panel changes-panel"><summary>历史版本与导出</summary><p>恢复会将历史内容加载到表单；点击“保存配置”后生成新版本，再按需应用。</p><div id="robotHistory" class="history-list"></div></details>
           </div>
         </div>
       </div>
