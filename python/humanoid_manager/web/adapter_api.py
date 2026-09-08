@@ -82,6 +82,9 @@ def register_adapter_routes(app, store, runtime):
         allowed = {"robot_id", "name", "source_robot", "driver_id", "model_id", "gripper_id", "source_workspace"}
         if not isinstance(data, dict) or set(data) - allowed:
             raise web.HTTPBadRequest(text="无效的机器人创建参数")
+        for field, label in (("robot_id", "配置 ID（robot_id）"), ("name", "显示名称（name）")):
+            if field not in data:
+                raise web.HTTPBadRequest(text=f"缺少{label}")
         async with operation_lock:
             return web.json_response(await client.call("create", **data), status=201)
 

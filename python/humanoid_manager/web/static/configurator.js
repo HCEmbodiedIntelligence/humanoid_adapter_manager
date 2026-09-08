@@ -367,14 +367,79 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
       setText('#robotApplyHint',recording.recording?'正在录制，可保存草稿和版本；停止录制后再应用。':busy?'机器人正在运行。停止对应启动进程后，可应用已保存版本。':enabled?'可应用已保存版本。应用完成后，下一次启动机器人时加载。':'等待新鲜 ROS 状态以确认机器人已停止；当前可编辑和保存配置。');}
   }
   function disconnected(){setText('#runningRobot','网页服务连接中断');setText('#runningRevision','未知');setText('#sessionRecording','状态未知');$('#applyRobot').disabled=true;}
-  function setupCreateChoices(){if(!catalog)return;const mode=$('#managedCreateSource').value;$('#managedPluginChoices').classList.toggle('hidden',mode!=='plugins');$('#managedSourceRobotLabel').classList.toggle('hidden',mode==='plugins');const select=$('#managedSourceRobot');select.replaceChildren();const source=mode==='workspace'?catalog.workspaces.map(x=>[x.robot_id,x.name]):Object.entries(catalog.robots).map(([id,x])=>[id,x.name]);for(const [id,name] of source){const opt=el('option',`${name} · ${id}`);opt.value=id;select.append(opt);}for(const [id,key] of [['managedDriverChoice','hardware_drivers'],['managedModelChoice','robot_models'],['managedGripperChoice','gripper_drivers']]){const node=$('#'+id);node.replaceChildren();if(key==='gripper_drivers'){const empty=el('option','不配置夹爪插件');empty.value='';node.append(empty);}for(const [keyId,value] of Object.entries(catalog[key]||{})){const opt=el('option',`${value.name} · ${keyId}`);opt.value=keyId;node.append(opt);}}}
+  function populateCreateChoice(node, entries, emptyLabel, optional=false) {
+    const previous=node.value;
+    node.replaceChildren();
+    if(optional||!entries.length){const opt=el('option',emptyLabel);opt.value='';node.append(opt);}
+    for(const [id,name] of entries){const opt=el('option',`${name} · ${id}`);opt.value=id;node.append(opt);}
+    if([...node.options].some(option=>option.value===previous))node.value=previous;
+  }
+  function setupCreateChoices() {
+    if(!catalog)return;
+    const mode=$('#managedCreateSource').value, plugins=mode==='plugins';
+    $('#managedPluginChoices').classList.toggle('hidden',!plugins);
+    $('#managedSourceRobotLabel').classList.toggle('hidden',plugins);
+    const source=mode==='workspace'?(catalog.workspaces||[]).map(x=>[x.robot_id,x.name]):Object.entries(catalog.robots||{}).map(([id,x])=>[id,x.name]);
+    populateCreateChoice($('#managedSourceRobot'),source,'暂无可复制的机器人配置');
+    $('#managedSourceRobot').disabled=plugins;
+    for(const [id,key,label] of [
+      ['managedDriverChoice','hardware_drivers','请先导入机械臂驱动插件 ZIP'],
+      ['managedModelChoice','robot_models','请先导入模型插件 ZIP'],
+      ['managedGripperChoice','gripper_drivers','不配置夹爪插件'],
+    ]){
+      const node=$('#'+id);
+      populateCreateChoice(node,Object.entries(catalog[key]||{}).map(([id,x])=>[id,x.name]),label,key==='gripper_drivers');
+      node.disabled=!plugins;
+    }
+  }
+  function creationId(input,label,{optional=false,maxLength=null}={}) {
+    const value=input.value.trim();
+    input.value=value;
+    if(optional&&!value)return '';
+    if(!value){input.focus();throw new Error(`请填写或选择${label}`);}
+    if(!/^[a-z0-9][a-z0-9_.-]*$/.test(value)||(maxLength!==null&&value.length>maxLength)){
+      input.focus();
+      throw new Error(`${label}需为${maxLength===null?'':' 1–'+maxLength+' 个'}小写字母、数字、点、下划线或短横线，且以字母或数字开头；请检查空格或隐藏字符`);
+    }
+    return value;
+  }
+  function createRobotPayload(form) {
+    const data={robot_id:creationId(form.elements.namedItem('robot_id'),'配置 ID',{maxLength:64})};
+    const name=form.elements.namedItem('name');
+    data.name=name.value.trim();
+    name.value=data.name;
+    if(!data.name){name.focus();throw new Error('请填写显示名称');}
+    const mode=$('#managedCreateSource').value;
+    if(mode==='workspace')data.source_workspace=creationId($('#managedSourceRobot'),'要复制的机器人配置',{maxLength:64});
+    else if(mode==='deployed')data.source_robot=creationId($('#managedSourceRobot'),'来源机器人');
+    else if(mode==='plugins'){
+      data.driver_id=creationId($('#managedDriverChoice'),'机械臂驱动插件（请先导入对应 ZIP）');
+      data.model_id=creationId($('#managedModelChoice'),'模型插件（请先导入对应 ZIP）');
+      data.gripper_id=creationId($('#managedGripperChoice'),'夹爪插件',{optional:true});
+    }else throw new Error('请选择有效的创建方式');
+    return data;
+  }
   async function showCreate(){try{await refresh();setupCreateChoices();$('#managedCreateError').textContent='';$('#managedCreateDialog').showModal();}catch(e){toast(e.message,true);}}
   function showImportDialog(kind='plugin',expected='',title='导入驱动 / 模型'){const form=$('#managedImportForm');form.reset();$('#managedImportKind').value=kind;$('#managedImportExpectedType').value=expected;$('#managedImportTitle').textContent=title;$('#managedImportIdentity').classList.toggle('hidden',kind!=='workspace');$('#managedImportError').textContent='';$('#managedImportDialog').showModal();}
   window.Configurator={open,status,disconnected,settingsLoaded,saveSettings};
   $('#managedRobotName').oninput=event=>{selected.draft.name=event.target.value;markDirty();};
   $('#refreshRobots').onclick=()=>operation(async()=>{if(dirty&&!confirm('刷新会放弃当前表单的未保存修改，是否继续？'))return;const id=selected?.robot_id;dirty=false;await refresh();if(id)await selectRobot(id);});
   $('#createRobot').onclick=showCreate;$('#emptyCreateRobot').onclick=showCreate;$('#managedCreateSource').onchange=setupCreateChoices;
-  $('#managedCreateForm').onsubmit=async event=>{event.preventDefault();const b=event.submitter;b.disabled=true;try{const data=Object.fromEntries(new FormData(event.target));const mode=$('#managedCreateSource').value;if(mode==='deployed')data.source_robot=$('#managedSourceRobot').value;else if(mode==='workspace')data.source_workspace=$('#managedSourceRobot').value;else{data.driver_id=$('#managedDriverChoice').value;data.model_id=$('#managedModelChoice').value;data.gripper_id=$('#managedGripperChoice').value;}selected=await post('/api/adapters/robots',data);dirty=false;$('#managedCreateDialog').close();await refresh();renderEditor();location.hash='robots';}catch(e){$('#managedCreateError').textContent=e.message;}finally{b.disabled=false;}};
+  // Validate after trimming: native pattern validation runs before onsubmit.
+  $('#managedCreateForm').noValidate=true;
+  $('#managedCreateForm').onsubmit=async event=>{
+    event.preventDefault();
+    const form=event.currentTarget,b=form.querySelector('button[type="submit"]');
+    if(b.disabled)return;
+    b.disabled=true;
+    $('#managedCreateError').textContent='';
+    try{
+      const data=createRobotPayload(form);
+      selected=await post('/api/adapters/robots',data);dirty=false;
+      $('#managedCreateDialog').close();await refresh();renderEditor();location.hash='robots';
+    }catch(e){$('#managedCreateError').textContent=e.message;}
+    finally{b.disabled=false;}
+  };
   $('#importRobotBundle').onclick=()=>showImportDialog();
   $('#managedImportKind').onchange=()=>{const workspace=$('#managedImportKind').value==='workspace';$('#managedImportIdentity').classList.toggle('hidden',!workspace);if(workspace)$('#managedImportExpectedType').value='';};
   $('#managedImportForm').onsubmit=async event=>{event.preventDefault();const b=event.submitter;b.disabled=true;try{const data=new FormData(event.target);if(data.get('kind')==='workspace'&&(!data.get('robot_id')||!data.get('name')))throw new Error('请填写新配置 ID 和名称');const result=await api('/api/adapters/import',{method:'POST',body:data});$('#managedImportDialog').close();await refresh();if(result.robot_id)await selectRobot(result.robot_id);else if(selected)renderForm();toast(result.plugin_type==='gripper_driver'?'夹爪插件已导入，可在列表中选择':'配置包已校验并导入');}catch(e){$('#managedImportError').textContent=e.message;}finally{b.disabled=false;}};

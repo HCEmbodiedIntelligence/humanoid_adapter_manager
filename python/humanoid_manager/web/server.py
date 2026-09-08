@@ -47,7 +47,10 @@ def create_app(store):
     register_adapter_routes(app,store,runtime)
     register_dataset_routes(app,runtime)
     register_capture_routes(app,runtime)
-    static=Path(__file__).parent/'static'
+    # In a colcon symlink-install the installed static files are individual
+    # symlinks outside that directory. Resolve the module to its source root,
+    # keeping aiohttp's protection against following arbitrary symlinks intact.
+    static=Path(__file__).resolve().parent/'static'
 
     async def index(_request):
         return web.FileResponse(static/'index.html')

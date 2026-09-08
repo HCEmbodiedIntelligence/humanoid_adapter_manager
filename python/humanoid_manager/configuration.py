@@ -48,10 +48,30 @@ def atomic_json(path: Path, value):
             os.unlink(name)
 
 
-def _id(value):
-    if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,63}", value):
-        raise DeploymentError("ID 需为 1–64 个小写字母、数字、点、下划线或短横线")
+def _id(value, label="配置 ID（robot_id）", *, max_length=64):
+    if not isinstance(value, str):
+        raise DeploymentError(f"{label} 必须是字符串")
+    if not value:
+        raise DeploymentError(f"{label} 不能为空")
+    if (not re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", value) or
+            (max_length is not None and len(value) > max_length)):
+        length = f"1–{max_length} 个" if max_length is not None else ""
+        # Escape invisible characters so the UI identifies the actual bad field.
+        received = json.dumps(value[:100], ensure_ascii=True)
+        raise DeploymentError(
+            f"{label} 需为 {length}小写字母、数字、点、下划线或短横线，"
+            f"且以字母或数字开头；收到：{received}"
+        )
     return value
+
+
+def _creation_id(value, label, *, optional=False, max_length=64):
+    """Normalize pasted input only at creation, never existing storage paths."""
+    if isinstance(value, str):
+        value = value.strip()
+    if optional and value == "":
+        return ""
+    return _id(value, label, max_length=max_length)
 
 
 def _yaml(path):
@@ -487,7 +507,9 @@ def validate_gripper_selection(value):
         return None
     if not isinstance(value, dict) or set(value) != {"plugin_id", "name"}:
         raise DeploymentError("夹爪驱动选择必须包含 plugin_id 和 name")
-    plugin_id = _id(value.get("plugin_id"))
+    # Imported plugin IDs and private '<robot_id>.gripper' IDs follow the
+    # manifest rules, not the 64-character limit for editable workspace IDs.
+    plugin_id = _id(value.get("plugin_id"), "夹爪插件 ID（plugin_id）", max_length=None)
     name = value.get("name")
     if not isinstance(name, str) or not name.strip() or len(name) > 100:
         raise DeploymentError("夹爪驱动名称需为 1–100 个字符")
@@ -610,9 +632,21 @@ class ConfigurationManager:
         self, robot_id, name, source_robot="", driver_id="", model_id="",
         gripper_id="", source_workspace="",
     ):
-        robot_id = _id(robot_id)
+        robot_id = _creation_id(robot_id, "配置 ID（robot_id）")
         if not isinstance(name, str) or not name.strip():
             raise DeploymentError("机器人名称不能为空")
+        source_workspace = _creation_id(
+            source_workspace, "来源配置 ID（source_workspace）", optional=True
+        )
+        source_robot = _creation_id(
+            source_robot, "来源机器人 ID（source_robot）", optional=True, max_length=None
+        )
+        if not source_workspace and not source_robot:
+            driver_id = _creation_id(driver_id, "机械臂驱动插件 ID（driver_id）", max_length=None)
+            model_id = _creation_id(model_id, "模型插件 ID（model_id）", max_length=None)
+            gripper_id = _creation_id(
+                gripper_id, "夹爪插件 ID（gripper_id）", optional=True, max_length=None
+            )
         with self.lock():
             workspace = self._workspace(robot_id)
             if workspace.exists():
@@ -626,15 +660,15 @@ class ConfigurationManager:
                 recording, cameras = source_document["recording"], source_document["cameras"]
                 initial_poses = source_document["initial_poses"]
             if source_robot:
-                resolve_robot_deployment(source_root, _id(source_robot))
+                resolve_robot_deployment(source_root, source_robot)
                 source_driver, source_model, source_gripper, _ = self._components(
                     source_root, source_robot
                 )
             else:
-                source_driver = source_root / "hardware_drivers" / _id(driver_id)
-                source_model = source_root / "robot_models" / _id(model_id)
+                source_driver = source_root / "hardware_drivers" / driver_id
+                source_model = source_root / "robot_models" / model_id
                 source_gripper = (
-                    source_root / "gripper_drivers" / _id(gripper_id)
+                    source_root / "gripper_drivers" / gripper_id
                     if gripper_id else None
                 )
             component_specs = [
@@ -643,8 +677,15 @@ class ConfigurationManager:
             ]
             if source_gripper is not None:
                 component_specs.append((source_gripper, "gripper_drivers", "gripper"))
-            for path, _, _ in component_specs:
-                validate_tree(path)
+            for path, kind, _ in component_specs:
+                label = {"hardware_drivers": "机械臂驱动插件", "robot_models": "模型插件",
+                         "gripper_drivers": "夹爪插件"}[kind]
+                if not path.is_dir():
+                    raise DeploymentError(f"{label} {path.name} 不存在，请刷新插件列表或重新导入对应 ZIP")
+                try:
+                    validate_tree(path)
+                except DeploymentError as error:
+                    raise DeploymentError(f"{label} {path.name} 校验失败：{error}") from error
             with tempfile.TemporaryDirectory(dir=self.state_root, prefix=".create-") as temporary:
                 root = Path(temporary) / "root"
                 for source, kind, suffix in component_specs:
@@ -956,6 +997,7 @@ class ConfigurationManager:
         }
 
     def import_workspace(self, archive, robot_id, name):
+        robot_id = _creation_id(robot_id, "配置 ID（robot_id）")
         self.state_root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=self.state_root, prefix=".import-") as temporary:
             folder = Path(temporary)

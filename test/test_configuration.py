@@ -30,6 +30,89 @@ def create(manager):
     return manager.create('lab', '实验机器人', source_robot='test_robot')
 
 
+@pytest.mark.parametrize('gripper_id', ['', 'fake_gripper'])
+@pytest.mark.parametrize('robot_id', ['openarmx_01', ' \topenarmx_01\n', 'a' * 64])
+def test_create_accepts_workspace_ids_and_trims_pasted_input(manager, robot_id, gripper_id):
+    robot = manager.create(robot_id, '  实验机器人  ', driver_id=' fake_driver ',
+                           model_id=' test_model ', gripper_id=gripper_id)
+    expected = robot_id.strip()
+    assert robot['robot_id'] == expected
+    assert robot['name'] == '实验机器人'
+    # A maximum-length workspace ID creates longer private plugin IDs. Saving
+    # must still work, including validation of the private gripper selection.
+    saved = manager.save(expected, robot['draft'], robot['etag'])
+    assert saved['robot_id'] == expected
+    assert ConfigurationManager(manager.plugin_root, manager.state_root).get(expected)['latest'] == saved['latest']
+
+
+@pytest.mark.parametrize('field,value,label', [
+    ('robot_id', '', '配置 ID（robot_id）'),
+    ('robot_id', 'openarmx_01\u200b', '配置 ID（robot_id）'),
+    ('robot_id', 'openarmx 01', '配置 ID（robot_id）'),
+    ('driver_id', '', '机械臂驱动插件 ID（driver_id）'),
+    ('driver_id', None, '机械臂驱动插件 ID（driver_id）'),
+    ('driver_id', '../escape', '机械臂驱动插件 ID（driver_id）'),
+    ('model_id', '', '模型插件 ID（model_id）'),
+    ('model_id', 'TestModel', '模型插件 ID（model_id）'),
+    ('gripper_id', [], '夹爪插件 ID（gripper_id）'),
+    ('source_workspace', '../escape', '来源配置 ID（source_workspace）'),
+    ('source_robot', '../escape', '来源机器人 ID（source_robot）'),
+])
+def test_create_reports_the_actual_invalid_field_without_persisting(manager, field, value, label):
+    arguments = dict(robot_id='openarmx_01', name='实验机器人',
+                     driver_id='fake_driver', model_id='test_model')
+    arguments[field] = value
+    with pytest.raises(DeploymentError) as caught:
+        manager.create(**arguments)
+    assert label in str(caught.value)
+    if value == 'openarmx_01\u200b':
+        assert '\\u200b' in str(caught.value)
+    assert manager.catalog()['workspaces'] == []
+
+
+@pytest.mark.parametrize('field,label', [('driver_id', '机械臂驱动插件'),
+                                        ('model_id', '模型插件'), ('gripper_id', '夹爪插件')])
+def test_create_reports_missing_catalog_plugin(manager, field, label):
+    arguments = dict(robot_id='openarmx_01', name='实验机器人',
+                     driver_id='fake_driver', model_id='test_model')
+    arguments[field] = 'missing_plugin'
+    with pytest.raises(DeploymentError, match=f'{label} missing_plugin 不存在'):
+        manager.create(**arguments)
+    assert manager.catalog()['workspaces'] == []
+
+
+def test_create_can_copy_and_reject_duplicate_normalized_id(manager):
+    original = create(manager)
+    copied = manager.create(' openarmx_01 ', '复制的机器人', source_workspace=' lab ')
+    assert copied['robot_id'] == 'openarmx_01'
+    assert manager.get('lab')['latest'] == original['latest']
+    with pytest.raises(ConfigurationConflict):
+        manager.create(' openarmx_01 ', '不能覆盖', source_workspace='lab')
+    assert manager.get('openarmx_01')['latest'] == copied['latest']
+
+
+def test_creation_accepts_imported_plugin_ids_longer_than_workspace_ids(manager, tmp_path):
+    from test_deployment_plugins import _write_yaml
+    import yaml
+
+    driver = _hardware_tree(tmp_path / 'long-driver')
+    manifest = yaml.safe_load((driver / 'manifest.yaml').read_text())
+    manifest['plugin_id'] = 'driver_' + 'a' * 64
+    _write_yaml(driver / 'manifest.yaml', manifest)
+    deploy_archive(pack_directory(driver, tmp_path / 'long-driver.zip'), manager.plugin_root)
+    robot = manager.create('openarmx_01', '实验机器人', driver_id=manifest['plugin_id'], model_id='test_model')
+    assert robot['robot_id'] == 'openarmx_01'
+
+
+def test_workspace_import_uses_normalized_id_for_followup_save(manager, tmp_path):
+    original = create(manager)
+    archive = tmp_path / 'workspace.zip'
+    manager.export('lab', original['latest'], archive)
+    imported = manager.import_workspace(archive, ' openarmx_01 ', '导入配置')
+    assert imported['robot_id'] == 'openarmx_01'
+    assert manager.get('openarmx_01')['latest'] == imported['latest']
+
+
 def test_single_save_validates_versions_and_normalizes_joint_space_channels(manager):
     robot = create(manager)
     previous_revision = robot['latest']

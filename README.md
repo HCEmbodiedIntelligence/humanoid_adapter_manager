@@ -101,4 +101,6 @@ PYTHONPATH="src/humanoid_manager/python:src/hc_teleop_recv:$PYTHONPATH" \
 
 测试环境需要安装 `pytest`。没有网页依赖的系统 Python 会跳过网页/MCAP 测试；完整验证应使用安装了 `requirements-web.txt` 的解释器。已覆盖配置回滚与锁、编辑冲突、录制不中断、裁剪导出、异常扫描、文件修复、回放控制和真实 ROS 按钮/配置服务；Mock 集成验证不连接物理机器人。
 
+`test_web_creation.py` 通过真实 HTTP / CLI 在临时目录创建 `openarmx_01`，并检查字段错误、复制与重复 ID；不连接 ROS。安装了 Node、Playwright 与 Chromium 时，还会实际点击网页表单，检查插件选择、首尾空白、可选夹爪与刷新后的持久化。可用 `HUMANOID_TEST_PLAYWRIGHT_MODULE` 指向已有 Playwright 包、`HUMANOID_TEST_BROWSER_EXECUTABLE` 指向已有 Chromium；未安装浏览器依赖时仅跳过浏览器用例。设置 `HUMANOID_TEST_PLUGIN_BUNDLES` 为包含 `driver.zip`、`model.zip`、`gripper.zip` 的目录，可在临时目录用实际插件替代测试插件，不修改已部署配置。
+
 插件包结构与校验规则见 [部署说明](docs/deploying_plugins.md)。
