@@ -2,8 +2,8 @@
 
 从零安装整套工作区可使用 `robot_bringup/workspace.sh setup`，步骤见
 [统一工作区入口](https://github.com/HCEmbodiedIntelligence/robot_bringup/blob/main/docs/workspace.md)。
-该入口生成的 `openarmx-v10-complete.zip` 可在本页面“机器人配置 → 导入配置包”中作为
-整机配置导入；它已包含机械臂驱动、模型、遥操作及独立夹爪插件。
+该入口默认只安装通用软件，不下载或生成整机配置 ZIP；机器人驱动、模型、关节及遥操作参数
+通过本页面分别导入、创建和编辑，保存并应用后按机器人 ID 启动。
 
 机器人配置、运行状态与数据管理的独立网页入口。原包 `humanoid_adapter_manager` 已改名为 `humanoid_manager`，源码目录和 Python 导入名也已同步更新。
 
