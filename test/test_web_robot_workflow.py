@@ -1,6 +1,7 @@
 """Configure through the real HTTP API, then run only the packaged Mock driver."""
 import asyncio
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -173,6 +174,12 @@ class WebRobotWorkflowTests(unittest.IsolatedAsyncioTestCase):
         state = self.runtime.ros.platform_status()["configuration"]["data"]
         self.assertEqual(state["robot_id"], "web_arm")
         self.assertEqual(state["revision"], robot["latest"])
+        expected_receiver_hash = hashlib.sha256(deployment.resources["hc_teleop_config"].read_bytes()).hexdigest()
+        def receiver_loaded_saved_configuration():
+            teleop = self.runtime.ros.platform_status().get("teleop")
+            return (teleop and teleop["fresh"] and teleop["data"].get("configuration", {}).get("sha256")
+                    == expected_receiver_hash)
+        await self.wait_for(receiver_loaded_saved_configuration, 5)
         # This HTTP action moves the isolated Mock driver, never a physical robot.
         result = await self.post("/api/adapters/robots/web_arm/joints/left_shoulder_pitch/jog", {"delta_rad": .017453292519943295})
         self.assertTrue(result["ok"])

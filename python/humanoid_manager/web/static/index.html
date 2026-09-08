@@ -8,7 +8,7 @@
 <div class="configuration-strip" aria-live="polite"><div><span>运行中的机器人</span><strong id="runningRobot">等待状态</strong></div><div><span>运行配置版本</span><strong id="runningRevision">未知</strong></div><div><span>网页与录制配置</span><strong id="settingsState">正在读取</strong></div><div><span>数据录制</span><strong id="sessionRecording">未录制</strong></div></div>
 <section class="page hidden" id="robots">
       <div class="workspace-heading"><div><h2>机器人配置</h2><p>选择机器人，在表单中修改参数，校验后保存为新版本。</p></div>
-        <div class="button-row"><button id="refreshRobots">刷新</button><button id="importRobotBundle">导入配置包</button><button class="primary" id="createRobot">新建 / 复制</button></div></div>
+        <div class="button-row"><button id="refreshRobots">刷新</button><button id="importRobotBundle">导入驱动 / 模型</button><button class="primary" id="createRobot">新建 / 复制</button></div></div>
       <div id="managerError" class="notice hidden" role="alert"></div>
       <div class="workspace-layout">
         <aside class="robot-list" aria-label="机器人列表" id="managedRobots"></aside>
@@ -53,9 +53,9 @@
       <label class="hidden" id="managedSourceRobotLabel">来源机器人<select id="managedSourceRobot"></select></label>
       <div class="form-grid" id="managedPluginChoices"><label>机械臂驱动插件<select id="managedDriverChoice"></select></label><label>模型插件<select id="managedModelChoice"></select></label><label>夹爪插件（可选）<select id="managedGripperChoice"></select></label></div>
       <p class="form-help">选择后由管理器生成机器人组合；夹爪作为独立插件启动，可复用已有 ROS 夹爪驱动或添加新的硬件插件。</p><p id="managedCreateError" role="alert"></p>
-      <div class="dialog-actions"><button type="button" data-close-dialog="managedCreateDialog">取消</button><button class="primary" type="submit">创建配置</button></div></form></dialog><dialog id="managedImportDialog"><form id="managedImportForm"><input id="managedImportExpectedType" name="expected_plugin_type" type="hidden"><div class="dialog-title"><h2 id="managedImportTitle">导入配置包</h2><button type="button" data-close-dialog="managedImportDialog" aria-label="关闭">×</button></div>
-      <label>配置包类型<select name="kind" id="managedImportKind"><option value="workspace">网页导出的完整机器人配置</option><option value="plugin">机械臂驱动 / 夹爪 / 模型插件包</option></select></label>
-      <div id="managedImportIdentity" class="form-grid"><label>新配置 ID<input name="robot_id" pattern="[a-z0-9][a-z0-9_.-]{0,63}"></label><label>显示名称<input name="name"></label></div>
+      <div class="dialog-actions"><button type="button" data-close-dialog="managedCreateDialog">取消</button><button class="primary" type="submit">创建配置</button></div></form></dialog><dialog id="managedImportDialog"><form id="managedImportForm"><input id="managedImportExpectedType" name="expected_plugin_type" type="hidden"><div class="dialog-title"><h2 id="managedImportTitle">导入驱动 / 模型</h2><button type="button" data-close-dialog="managedImportDialog" aria-label="关闭">×</button></div>
+      <label>配置包类型<select name="kind" id="managedImportKind"><option value="plugin">机械臂驱动 / 夹爪 / 模型插件包</option><option value="workspace">网页导出的完整机器人配置（迁移用）</option></select></label>
+      <div id="managedImportIdentity" class="form-grid hidden"><label>新配置 ID<input name="robot_id" pattern="[a-z0-9][a-z0-9_.-]{0,63}"></label><label>显示名称<input name="name"></label></div>
       <label>ZIP 文件<input name="archive" type="file" accept=".zip" required></label><p class="form-help">首次使用分别导入机械臂驱动、模型和可选夹爪插件，然后点击“新建机器人配置”。完整机器人配置 ZIP 用于机器间迁移。</p><p id="managedImportError" role="alert"></p>
       <div class="dialog-actions"><button type="button" data-close-dialog="managedImportDialog">取消</button><button class="primary" type="submit">校验并导入</button></div></form></dialog>
 <dialog id="recordingCheckDialog"><form method="dialog"><div class="dialog-title"><h2>录制话题尚未就绪</h2></div><p id="recordingCheckMessage"></p><div class="dialog-actions"><button value="cancel">返回检查</button><button type="button" id="forceRecording">仍然开始录制</button></div></form></dialog>
