@@ -197,10 +197,10 @@ ros2 run humanoid_manager humanoid_pluginctl.py deploy gripper.zip
 python3 src/openarmx_driver/tools/create_deployment_bundle.py \
   "$(ros2 pkg prefix openarmx_driver)" deploy_artifacts/openarmx-driver.zip
 
-python3 src/openarmx_description/tools/create_deployment_bundle.py \
+python3 src/openarmx_driver/tools/create_model_bundle.py \
   deploy_artifacts/openarmx-v10-model.zip
 
-python3 src/humanoid_gripper/tools/create_deployment_bundle.py \
+python3 src/robot_bringup/packages/humanoid_gripper/tools/create_deployment_bundle.py \
   "$(ros2 pkg prefix humanoid_gripper)" deploy_artifacts/openarmx-gripper.zip \
   --config openarmx_v10_bimanual.yaml \
   --plugin-id openarmx_v10_bimanual_gripper

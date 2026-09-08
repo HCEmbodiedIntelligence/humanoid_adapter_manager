@@ -13,9 +13,8 @@ def main():
     if (source/'python').is_dir():
         sys.path.insert(0,str(source/'python'))
     parser=argparse.ArgumentParser(description=__doc__)
-    default_root=Path('/var/lib/humanoid-plugins')
-    if not default_root.exists():
-        default_root=Path.home()/'.local/share/humanoid-plugins'
+    from humanoid_manager.deployment import DEFAULT_PLUGIN_ROOT
+    default_root=DEFAULT_PLUGIN_ROOT
     parser.add_argument('--plugin-root',type=Path)
     parser.add_argument('--state-root',type=Path,default=Path.home()/'.local/share/humanoid-manager')
     parser.add_argument('--host')

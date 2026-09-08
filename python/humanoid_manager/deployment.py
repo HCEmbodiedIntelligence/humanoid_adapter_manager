@@ -24,7 +24,11 @@ import yaml
 SCHEMA_VERSION = 1
 DRIVER_INTERFACE_ABI = 1
 SUPPORTED_ROS_DISTRO = "humble"
-DEFAULT_PLUGIN_ROOT = Path("/var/lib/humanoid-plugins")
+DEFAULT_PLUGIN_ROOT = (
+    Path("/var/lib/humanoid-plugins")
+    if Path("/var/lib/humanoid-plugins").is_dir()
+    else Path.home() / ".local/share/humanoid-plugins"
+)
 MAX_ARCHIVE_FILES = 10000
 MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_CONFIG_BYTES = 16 * 1024 * 1024

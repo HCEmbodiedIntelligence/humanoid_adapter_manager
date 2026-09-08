@@ -1,5 +1,10 @@
 # humanoid_manager
 
+从零安装整套工作区可使用 `robot_bringup/workspace.sh setup`，步骤见
+[统一工作区入口](https://github.com/HCEmbodiedIntelligence/robot_bringup/blob/main/docs/workspace.md)。
+该入口生成的 `openarmx-v10-complete.zip` 可在本页面“机器人配置 → 导入配置包”中作为
+整机配置导入；它已包含机械臂驱动、模型、遥操作及独立夹爪插件。
+
 机器人配置、运行状态与数据管理的独立网页入口。原包 `humanoid_adapter_manager` 已改名为 `humanoid_manager`，源码目录和 Python 导入名也已同步更新。
 
 本程序配合 `hc_teleop_recv` 使用，不需要启动 `HC-teleop-robotic` 或 `teleop_vr_recv`。驱动和运动计算仍由已有的 `humanoid_driver_runtime`、`humanoid_motion_server` 执行。
