@@ -4,13 +4,15 @@
 from pathlib import Path
 import json
 from ament_index_python.packages import get_package_share_directory
-from humanoid_manager.runtime_state import acquire_deployment_lock, configuration_identity
+from humanoid_manager.runtime_state import acquire_deployment_lock, acquire_robot_run_lock, configuration_identity
+from humanoid_manager.startup import bringup_command, default_plan
 
 _LEASES = []
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, Shutdown
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, OpaqueFunction, Shutdown, RegisterEventHandler
+from launch.event_handlers import OnProcessExit
+from launch.launch_description_sources import PythonLaunchDescriptionSource, AnyLaunchDescriptionSource
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -27,6 +29,7 @@ def _launch_registered_robot(context):
         raise RuntimeError("robot_id is required")
 
     plugin_root = Path(LaunchConfiguration("plugin_root").perform(context)).resolve()
+    _LEASES.append(acquire_robot_run_lock(plugin_root))
     lease = acquire_deployment_lock(plugin_root, shared=True)
     _LEASES.append(lease)
     deployment = resolve_robot_deployment(plugin_root, robot_id)
@@ -40,6 +43,9 @@ def _launch_registered_robot(context):
     start_motion = LaunchConfiguration("start_motion")
     start_teleop = LaunchConfiguration("start_teleop")
     start_cameras = LaunchConfiguration("start_cameras")
+    plan = default_plan(robot_id)
+    plan['bringup'] = json.loads(LaunchConfiguration('bringup_json').perform(context))
+    vendor = bringup_command(plan)
 
     actions = [
         Node(
@@ -79,6 +85,18 @@ def _launch_registered_robot(context):
             on_exit=Shutdown(reason="humanoid motion server exited"),
         ),
     ]
+    if vendor:
+        # The run lease is acquired before any vendor hardware can start.
+        # Normal successful controller-spawner exits are not failures.
+        actions[0:0] = [
+            RegisterEventHandler(OnProcessExit(on_exit=lambda event, _context: (
+                [Shutdown(reason=f'底层启动进程异常退出: {event.returncode}')]
+                if event.returncode else []))),
+            GroupAction(scoped=True, actions=[
+                IncludeLaunchDescription(AnyLaunchDescriptionSource(vendor[2]),
+                                         launch_arguments=plan['bringup']['arguments'].items()),
+            ]),
+        ]
 
     if deployment.gripper_class:
         actions.insert(
@@ -156,6 +174,8 @@ def _launch_registered_robot(context):
 def generate_launch_description():
     return LaunchDescription(
         [
+            DeclareLaunchArgument('bringup_json', default_value='{"package":"","launch_file":"","arguments":{}}',
+                                  description='Optional vendor ROS launch supplied by the public bringup entry.'),
             DeclareLaunchArgument(
                 "robot_id",
                 description="Deployed robot-composition ID below plugin_root.",

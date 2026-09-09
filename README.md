@@ -3,13 +3,31 @@
 从零安装整套工作区可使用 `robot_bringup/workspace.sh setup`，步骤见
 [统一工作区入口](https://github.com/HCEmbodiedIntelligence/robot_bringup/blob/main/docs/workspace.md)。
 该入口默认只安装通用软件，不下载或生成整机配置 ZIP；机器人驱动、模型、关节及遥操作参数
-通过本页面分别导入、创建和编辑，保存并应用后按机器人 ID 启动。
+通过本页面分别导入、创建和编辑，保存后通过网页按钮开启或重启机器人。
 
 机器人配置、运行状态与数据管理的独立网页入口。原包 `humanoid_adapter_manager` 已改名为 `humanoid_manager`，源码目录和 Python 导入名也已同步更新。
 
 本程序配合 `hc_teleop_recv` 使用，不需要启动 `HC-teleop-robotic` 或 `teleop_vr_recv`。驱动和运动计算仍由已有的 `humanoid_driver_runtime`、`humanoid_motion_server` 执行。
 
-## 启动网页
+## 统一启动（推荐）
+
+```bash
+source install/setup.bash
+ros2 launch robot_bringup registered_robot.launch.py
+```
+
+原有 launch 已合并网页与机器人进程管理。打开 `http://机器人IP:7876/dashboard/#robots`，
+在页面选择配置后点击“开启机器人”。首次安装不自动选机器人；以后同一命令沿用上次开启的配置及遥操作/相机选项。
+网页提供“开启机器人 / 关闭机器人 / 重启机器人”，关闭与重启只影响本入口管理的机器人服务，网页保持运行。
+保存配置只生成新版本，**点击重启后才加载**，不自动重启。运行状态中的“进程已启动”不等于硬件连接成功。
+退出终端 launch 会同时停止网页与机器人；关闭浏览器不会。需要只开网页时使用下面的脚本。
+
+已有网页监听地址、ROS 域和目录会保留；局域网访问可追加 `host:=0.0.0.0`。网页应只开放在可信局域网。
+机器人参数保存后用机器人重启按钮加载；网页自身的监听地址、ROS 域等系统设置仍需退出并重新启动整个 launch。
+OpenArmX 等厂商 launch 的接入配置见 `robot_bringup/launch/registered_robot.launch.py` 顶部 `EXTERNAL_BRINGUP`；
+它们在机器人子进程中运行，随按钮控制，不与网页共用生命周期。
+
+## 只启动网页（兼容模式）
 
 ```bash
 cd /home/czy/teleop_ws
@@ -38,7 +56,7 @@ colcon build --packages-select hc_teleop_recv humanoid_manager robot_bringup --s
 - **机器人配置**：导入机械臂驱动、夹爪、模型插件或完整配置包；新建、复制机器人；编辑驱动参数、关节映射、URDF、运动通道、初始姿态、接收端与录制方案。MoveJ/ServoJ 只配置关节分组，MoveL/MoveP/ServoP 才配置参考和末端坐标系。关节页提供 0.5°、1°、2°、5° 点动，先读取完整实测关节组，再通过对应 MoveJ 通道执行并检查限位。
 - **夹爪插件与测试**：夹爪页自动列出已导入的 `gripper_driver` 插件，可直接导入、切换或移除。当前插件按逻辑夹爪提供“测试打开 / 测试闭合”按钮，通过统一 JointState 命令与反馈话题确认动作；厂商话题和换算保留在插件包中。
 - **遥操作初始姿态**：在“初始姿态”页为一个或多个 MoveJ 通道设置关节角、速度、加速度、加加速度和超时。一个姿态可以同时包含双臂。姿态必须通过模型限位校验并保存、应用到当前运行版本后才能点击执行；网页执行前再次确认，接收端仍处于遥操作使能时拒绝发送。运动完成以 `humanoid_motion_server` 的真实关节反馈结果为准。
-- **保存与版本**：页面只保留一个“保存配置”按钮，一次完成表单提交、关联校验和新版本生成；“应用配置”负责更新部署文件，运行中的机器人不会被热修改。支持比较修改、恢复历史和导入导出。多个窗口同时修改会提示冲突。
+- **保存与版本**：“保存配置”一次完成表单提交、关联校验和新版本生成；统一入口下提示重启生效，“开启/重启机器人”负责更新部署并启动。仅网页模式保留“应用配置”。运行中的机器人不会被热修改。支持比较修改、恢复历史和导入导出。多个窗口同时修改会提示冲突。
 - **运行状态**：显示运行中的机器人、配置版本、驱动诊断、接收端状态、关节反馈与指令。超时状态显示过期；ROS 节点存在与驱动已连接分别显示。
 - **对齐采集**：按 v1.2 使用共同 ROS 时间、固定 FPS 网格、原始 RGB MP4、无损深度/点云及数值 MCAP，支持手动 episode、回放标记、离线重对齐和 LeRobot v3 导出。相机由独立 `humanoid_camera` 包启动官方驱动并转换曝光中点。详见 [采集接口](docs/capture_interfaces.md)。
 - **机器人相机方案**：每个机器人版本可配置任意数量的 D405、D435、其他 RealSense 或已标准化 ROS 话题相机；保存序列号、命名空间、分辨率、帧率、点云与录制必需性，并可同步到连续采集策略。
@@ -48,9 +66,9 @@ colcon build --packages-select hc_teleop_recv humanoid_manager robot_bringup --s
 
 录制方案分为“机器人中已保存的方案”和“网页当前录制配置”：载入机器人方案到表单，再保存并应用后用于下一次录制。
 
-## 启动已部署机器人
+## 仅机器人进程（高级兼容用法）
 
-网页中的“应用”更新部署文件。停止原启动进程后应用，再使用新入口启动：
+日常使用上面的统一 launch 即可。仅网页模式中“应用”更新部署文件；需要由外部监管程序单独启动机器人时使用：
 
 ```bash
 source /home/czy/teleop_ws/install/setup.bash
@@ -100,6 +118,10 @@ PYTHONPATH="src/humanoid_manager/python:src/hc_teleop_recv:$PYTHONPATH" \
 ```
 
 测试环境需要安装 `pytest`。没有网页依赖的系统 Python 会跳过网页/MCAP 测试；完整验证应使用安装了 `requirements-web.txt` 的解释器。已覆盖配置回滚与锁、编辑冲突、录制不中断、裁剪导出、异常扫描、文件修复、回放控制和真实 ROS 按钮/配置服务；Mock 集成验证不连接物理机器人。
+
+运行控制测试覆盖首次不自动选择、上次启动选择持久化、重复启动互斥、端口占用不启动机器人、
+崩溃不自动重启、孤儿子进程清理，以及真实 ROS Mock 驱动和临时厂商 launch 的保存/重启/关闭流程。
+浏览器用例实际点击运行按钮，并确认保存不更换运行版本、重启后新版本生效且网页一直可访问。
 
 `test_web_creation.py` 通过真实 HTTP / CLI 在临时目录创建 `openarmx_01`，并检查字段错误、复制与重复 ID；不连接 ROS。安装了 Node、Playwright 与 Chromium 时，还会实际点击网页表单，检查插件选择、首尾空白、可选夹爪与刷新后的持久化。可用 `HUMANOID_TEST_PLAYWRIGHT_MODULE` 指向已有 Playwright 包、`HUMANOID_TEST_BROWSER_EXECUTABLE` 指向已有 Chromium；未安装浏览器依赖时仅跳过浏览器用例。设置 `HUMANOID_TEST_PLUGIN_BUNDLES` 为包含 `driver.zip`、`model.zip`、`gripper.zip` 的目录，可在临时目录用实际插件替代测试插件，不修改已部署配置。
 

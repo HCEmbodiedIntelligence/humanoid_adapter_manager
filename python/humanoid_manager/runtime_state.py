@@ -21,6 +21,19 @@ def acquire_deployment_lock(root: Path, *, shared: bool = False):
     return stream
 
 
+def acquire_robot_run_lock(root: Path):
+    """One publisher stack per plugin root, independent of ROS discovery lag."""
+    root = Path(root).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    stream = (root / '.robot-run.lock').open('a+')
+    try:
+        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        stream.close()
+        raise DeploymentError('该插件目录已有机器人启动进程，请先停止，不能重复启动') from error
+    return stream
+
+
 @contextmanager
 def deployment_lock(root: Path, *, shared: bool = False):
     stream = acquire_deployment_lock(root, shared=shared)

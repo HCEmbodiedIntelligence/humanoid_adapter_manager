@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Start the standalone humanoid configuration and data manager."""
 import argparse
+import asyncio
 import copy
 import fcntl
 import json
 from pathlib import Path
 import sys
+import signal
 
 
 def main():
@@ -20,6 +22,11 @@ def main():
     parser.add_argument('--host')
     parser.add_argument('--port',type=int)
     parser.add_argument('--domain-id',type=int)
+    parser.add_argument('--run-robot',action='store_true',help='同时启动网页中明确选定的机器人；未选择时只启动网页')
+    parser.add_argument('--bringup-json',default='{"package":"","launch_file":"","arguments":{}}',help='由整机 launch 提供的底层启动项')
+    parser.add_argument('--robot-id')
+    parser.add_argument('--start-teleop',choices=('true','false'))
+    parser.add_argument('--start-cameras',choices=('true','false'))
     parser.add_argument('--offline',action=argparse.BooleanOptionalAction,default=None,help='Edit and validate without ROS')
     args=parser.parse_args()
     try:
@@ -39,7 +46,7 @@ def main():
     path=state_root/'configurator.yaml'
     store=ConfigStore(path)
     if not path.exists():
-        store.save({'server':{'host':args.host or '127.0.0.1','port':args.port if args.port is not None else 7876},
+        store.save({'server':{'host':args.host or ('0.0.0.0' if args.run_robot else '127.0.0.1'),'port':args.port if args.port is not None else 7876},
             'adapter_manager':{'enabled':True,'cli':str(Path(__file__).resolve().parent/'humanoid_pluginctl.py'),
                 'plugin_root':str((args.plugin_root or default_root).expanduser().resolve()),'state_root':str(state_root/'configuration')},
             'ros':{'enabled':not args.offline,'domain_id':args.domain_id if args.domain_id is not None else 14,'node_name':'humanoid_manager_observer',
@@ -67,7 +74,38 @@ def main():
     print(f'配置文件：{path}',flush=True)
     print(f'插件目录：{config["adapter_manager"]["plugin_root"]}',flush=True)
     print(f'网页：http://{config["server"]["host"]}:{config["server"]["port"]}/dashboard/#robots',flush=True)
-    web.run_app(create_app(store),host=config['server']['host'],port=config['server']['port'])
+    if not args.run_robot:
+        web.run_app(create_app(store),host=config['server']['host'],port=config['server']['port'])
+        return
+
+    async def serve():
+        from humanoid_manager.startup import default_plan, validate_plan
+        plan=default_plan('launch_validation')
+        plan['bringup']=json.loads(args.bringup_json)
+        validate_plan(plan)
+        initial={key: value for key,value in (
+            ('robot_id',args.robot_id),
+            ('start_teleop',args.start_teleop=='true' if args.start_teleop is not None else None),
+            ('start_cameras',args.start_cameras=='true' if args.start_cameras is not None else None)) if value is not None}
+        app=create_app(store,run_robot=True,bringup=plan['bringup'],initial_robot=initial)
+        runner=web.AppRunner(app)
+        stopped=asyncio.Event()
+        loop=asyncio.get_running_loop()
+        for sig in (signal.SIGINT,signal.SIGTERM):
+            loop.add_signal_handler(sig,stopped.set)
+        try:
+            await runner.setup()
+            await web.TCPSite(runner,config['server']['host'],config['server']['port']).start()
+            # Start hardware only after the HTTP port is successfully bound.
+            app['runtime'].launcher.begin_autostart()
+            print('统一启动已就绪。关闭浏览器不影响运行；Ctrl+C 停止本入口启动的整套服务。',flush=True)
+            await stopped.wait()
+        finally:
+            await runner.cleanup()
+            for sig in (signal.SIGINT,signal.SIGTERM):
+                loop.remove_signal_handler(sig)
+
+    asyncio.run(serve())
 
 
 if __name__=='__main__':

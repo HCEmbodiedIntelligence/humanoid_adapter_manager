@@ -135,6 +135,81 @@ class WebRobotWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, expected, text)
         return json.loads(text) if expected < 300 else text
 
+    async def test_unified_web_start_save_restart_stop_with_real_mock_nodes(self):
+        self.runtime.launcher.enabled = True
+        # A tiny installed vendor launch proves integration and lifecycle
+        # ownership without starting CAN, ros2_control, or physical drivers.
+        vendor_prefix = self.root / 'vendor_install'
+        marker = vendor_prefix / 'share/ament_index/resource_index/packages/mock_vendor'
+        marker.parent.mkdir(parents=True)
+        marker.write_text('')
+        vendor_launch = vendor_prefix / 'share/mock_vendor/launch/robot.launch.py'
+        vendor_launch.parent.mkdir(parents=True)
+        vendor_pids = self.root / 'vendor_pids.txt'
+        script = f"import os,time; open({str(vendor_pids)!r}, 'a').write(str(os.getpid())+'\\n'); time.sleep(120)"
+        vendor_launch.write_text('from launch import LaunchDescription\n'
+            'from launch.actions import DeclareLaunchArgument, ExecuteProcess\n'
+            'def generate_launch_description():\n'
+            "    return LaunchDescription([DeclareLaunchArgument('robot_id', default_value='vendor_default'),\n"
+            f"        ExecuteProcess(cmd=['/usr/bin/python3', '-c', {script!r}])])\n")
+        vendor_environment = patch.dict(os.environ, {'AMENT_PREFIX_PATH': str(vendor_prefix) + ':' + os.environ['AMENT_PREFIX_PATH']})
+        vendor_environment.start()
+        self.addCleanup(vendor_environment.stop)
+        self.runtime.launcher.bringup = {'package': 'mock_vendor', 'launch_file': 'robot.launch.py',
+                                        'arguments': {'robot_id': 'vendor_scope_only'}}
+        for kind, archive in mock_plugins(self.root):
+            data = FormData()
+            data.add_field('kind', 'plugin')
+            data.add_field('expected_plugin_type', kind)
+            data.add_field('archive', archive.read_bytes(), filename=archive.name, content_type='application/zip')
+            response = await self.client.post('/api/adapters/import', data=data)
+            self.assertEqual(response.status, 200, await response.text())
+        robot = await self.post('/api/adapters/robots', {'robot_id': 'managed_mock', 'name': '运行控制测试',
+            'driver_id': 'fake_driver', 'model_id': 'test_model'}, expected=201)
+        await self.post('/api/launcher/start', {'robot_id': robot['robot_id'], 'revision': robot['latest'],
+            'start_teleop': True, 'start_cameras': False})
+        process = self.runtime.launcher.processes[0][1]
+        def observed(revision):
+            state = self.runtime.ros.platform_status().get('configuration')
+            return (state and state['fresh'] and state['data'].get('state') == 'observed'
+                    and state['data'].get('revision') == revision)
+        try:
+            await self.wait_for(lambda: observed(robot['latest']), 20)
+            self.assertEqual(len(vendor_pids.read_text().splitlines()), 1)
+            await self.post('/api/launcher/start', {'robot_id': robot['robot_id']}, expected=409)
+            robot = await (await self.client.get('/api/adapters/robots/managed_mock')).json()
+            document = copy.deepcopy(robot['draft'])
+            document['resources']['driver_params']['humanoid_driver_runtime']['ros__parameters']['command_watchdog_ms'] = 220.0
+            old_revision = robot['latest']
+            robot = await self.post('/api/adapters/robots/managed_mock/save', {'document': document, 'etag': robot['etag']})
+            self.assertNotEqual(robot['latest'], old_revision)
+            self.assertIsNone(process.returncode)
+            self.assertTrue(observed(old_revision))
+            await self.post('/api/adapters/robots/managed_mock/apply', {'revision': robot['latest'], 'etag': robot['etag']}, expected=409)
+            # Restart runs concurrently with this GET: the web stays responsive.
+            restart = asyncio.create_task(self.post('/api/launcher/restart', {
+                'robot_id': robot['robot_id'], 'revision': robot['latest']}))
+            await asyncio.sleep(.1)
+            self.assertEqual((await self.client.get('/dashboard/')).status, 200)
+            await restart
+            self.assertIsNotNone(process.returncode)
+            self.assertNotEqual(self.runtime.launcher.processes[0][1].pid, process.pid)
+            await self.wait_for(lambda: observed(robot['latest']), 20)
+            self.assertEqual(len(vendor_pids.read_text().splitlines()), 2)
+            deployment = resolve_robot_deployment(self.root / 'plugins', robot['robot_id'])
+            parameters = yaml.safe_load(deployment.resources['driver_params'].read_text())
+            self.assertEqual(parameters['humanoid_driver_runtime']['ros__parameters']['command_watchdog_ms'], 220.0)
+            await self.post('/api/launcher/stop', {})
+            self.assertEqual((await self.client.get('/dashboard/')).status, 200)
+            self.assertEqual(self.runtime.launcher.status()['phase'], 'stopped')
+            self.assertEqual(self.runtime.launcher.status()['owned_processes'], 0)
+            for pid in vendor_pids.read_text().splitlines():
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(int(pid), 0)
+        except BaseException:
+            print(self.runtime.launcher.log_tail())
+            raise
+
     async def test_individual_import_create_edit_apply_and_run_saved_configuration(self):
         page = await self.client.get("/dashboard/")
         self.assertEqual(page.status, 200)

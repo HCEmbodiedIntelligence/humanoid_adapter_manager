@@ -11,9 +11,10 @@ from .runtime import PlatformRuntime
 from .settings_workspace import register_settings_routes
 from .datasets import register_dataset_routes
 from .capture_api import register_capture_routes
+from .robot_launcher import RobotLauncher, register_launcher_routes
 
 
-def create_app(store):
+def create_app(store, *, run_robot=False, bringup=None, initial_robot=None):
     runtime=PlatformRuntime(store.load(),store.path.parent)
     mutation_lock=asyncio.Lock()
     dataset_lock=asyncio.Lock()
@@ -44,7 +45,9 @@ def create_app(store):
     app=web.Application(client_max_size=100*1024*1024,middlewares=[guard])
     app['runtime']=runtime
     register_settings_routes(app,store,runtime)
-    register_adapter_routes(app,store,runtime)
+    client=register_adapter_routes(app,store,runtime)
+    runtime.launcher=RobotLauncher(runtime,client,enabled=run_robot,bringup=bringup,initial_robot=initial_robot)
+    register_launcher_routes(app,runtime.launcher)
     register_dataset_routes(app,runtime)
     register_capture_routes(app,runtime)
     # In a colcon symlink-install the installed static files are individual
@@ -176,6 +179,7 @@ def create_app(store):
         await runtime.start()
 
     async def shutdown(_app):
+        await runtime.launcher.stop()
         await asyncio.gather(*(ws.close() for ws in tuple(runtime.websockets)), return_exceptions=True)
         await runtime.stop()
 

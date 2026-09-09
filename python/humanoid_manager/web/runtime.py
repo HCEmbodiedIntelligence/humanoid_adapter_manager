@@ -78,6 +78,8 @@ class PlatformRuntime:
             await asyncio.to_thread(self.ros.stop)
 
     async def restart(self,config):
+        if getattr(self, 'launcher', None) and self.launcher.busy:
+            raise web.HTTPConflict(text='机器人运行中，请先停止机器人再应用网页运行设置')
         if self.capture and self.capture.busy():
             raise web.HTTPConflict(text='对齐采集或数据处理正在运行，请完成后再应用')
         if self.recorder and self.recorder.is_recording():
@@ -121,6 +123,7 @@ class PlatformRuntime:
         recording=self.recording_ros.status()
         ros['topic_health']={**ros.get('topic_health',{}),**recording.get('topic_health',{})}
         return {'status':'ok','uptime_seconds':round(time.time()-self.started_at,1),
+                'launcher':self.launcher.status() if getattr(self,'launcher',None) else None,
                 'ros':ros,'recording_executor':recording,'recording':self.recorder.status(),
                 'capture':self.capture.state()['status'],'capture_job':self.capture.job,
                 'replay':self.player.status(),'data_quality':self.quality.status(),

@@ -5,9 +5,10 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 pytest.importorskip('aiohttp')
@@ -126,3 +127,35 @@ class WebCreationTests(unittest.IsolatedAsyncioTestCase):
             self.skipTest(message)
         self.assertEqual(process.returncode, 0, message)
         self.assertEqual(self.manager.get('openarmx_01')['name'], 'OpenArmX 双臂')
+
+    async def test_browser_lifecycle_buttons_keep_web_alive(self):
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('Browser regression requires Node and Playwright')
+        response = await self.client.post('/api/adapters/robots', json=self.arguments)
+        self.assertEqual(response.status, 201, await response.text())
+        runtime = self.client.server.app['runtime']
+        runtime.launcher.enabled = True
+        runtime.require_robot_stopped = Mock()
+        real_spawn = asyncio.create_subprocess_exec
+        async def safe_spawn(*command, **kwargs):
+            if command[:2] == ('ros2', 'launch'):
+                return await real_spawn(sys.executable, '-c', 'import time; time.sleep(120)', **kwargs)
+            return await real_spawn(*command, **kwargs)
+        # Fake plugin files are NEVER loaded: only the child launch invocation
+        # is replaced with a harmless process. The web API/CLI remain real.
+        with patch('humanoid_manager.web.robot_launcher.asyncio.create_subprocess_exec', side_effect=safe_spawn):
+            process = await asyncio.create_subprocess_exec(node, str(Path(__file__).with_name('web_launcher_browser.cjs')),
+                str(self.client.make_url('/')), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            try:
+                output, _ = await asyncio.wait_for(process.communicate(), timeout=75)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                process.kill()
+                await process.wait()
+                raise
+            finally:
+                await runtime.launcher.stop()
+        message = output.decode(errors='replace')
+        if process.returncode == 77:
+            self.skipTest(message)
+        self.assertEqual(process.returncode, 0, message)

@@ -58,6 +58,8 @@ def register_adapter_routes(app, store, runtime):
     motion_lock = asyncio.Lock()
 
     def require_stopped():
+        if getattr(runtime, 'launcher', None) and runtime.launcher.busy:
+            raise web.HTTPConflict(text='机器人进程仍在运行，请先点击“停止机器人”再应用配置')
         if getattr(runtime, 'capture', None) and runtime.capture.busy():
             raise web.HTTPConflict(text='对齐采集或数据处理正在运行，请完成后再应用配置')
         if runtime.recorder and runtime.recorder.is_recording():
@@ -272,4 +274,5 @@ def register_adapter_routes(app, store, runtime):
         "/api/adapters/robots/{robot_id}/joints/{joint_name}/jog", jog_joint
     )
     app.router.add_post("/api/adapters/robots/{robot_id}/{operation}", action)
+    runtime.require_robot_stopped = require_stopped
     return client

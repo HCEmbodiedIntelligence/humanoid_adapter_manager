@@ -110,6 +110,8 @@ class SettingsWorkspace:
     async def apply(self, etag):
         state = self.check(etag)
         self.busy()
+        if getattr(self.runtime, 'launcher', None) and self.runtime.launcher.busy:
+            raise web.HTTPConflict(text='请先停止机器人，再应用网页运行设置')
         config, active = state["saved"], copy.deepcopy(self.runtime.config)
         restart = (config["server"] != active["server"] or
                    config["ros"]["domain_id"] != active["ros"]["domain_id"] or

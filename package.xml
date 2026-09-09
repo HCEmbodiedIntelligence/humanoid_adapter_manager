@@ -22,6 +22,8 @@
   <exec_depend>rosidl_runtime_py</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
   <exec_depend>humanoid_driver_runtime</exec_depend>
   <exec_depend>humanoid_motion_server</exec_depend>
   <exec_depend>humanoid_motion_interfaces</exec_depend>
