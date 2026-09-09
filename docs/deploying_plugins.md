@@ -200,7 +200,7 @@ python3 src/openarmx_driver/tools/create_deployment_bundle.py \
 python3 src/openarmx_driver/tools/create_model_bundle.py \
   deploy_artifacts/openarmx-v10-model.zip
 
-python3 src/robot_bringup/packages/humanoid_gripper/tools/create_deployment_bundle.py \
+python3 src/humanoid_gripper/tools/create_deployment_bundle.py \
   "$(ros2 pkg prefix humanoid_gripper)" deploy_artifacts/openarmx-gripper.zip \
   --config openarmx_v10_bimanual.yaml \
   --plugin-id openarmx_v10_bimanual_gripper
