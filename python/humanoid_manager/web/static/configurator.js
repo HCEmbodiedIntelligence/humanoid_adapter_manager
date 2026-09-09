@@ -348,8 +348,19 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
     cameras.forEach((camera,index)=>{
       const field=el('fieldset'),heading=el('div',undefined,'row-heading');heading.append(el('h4',camera.id||`相机 ${index+1}`),button('移除相机',()=>{cameras.splice(index,1);markDirty();renderForm();}));field.append(heading);
       const grid=el('div',undefined,'parameter-grid');field.append(grid);
-      const add=(key,options=null)=>grid.append(scalar(key,camera[key],value=>{const old=key==='id'?camera.id:null;camera[key]=value;if(key==='id'&&camera.namespace===old)camera.namespace=value;if(key==='backend'||key==='device_type')renderForm();},{options}));
-      add('id');add('enabled');add('backend',['realsense','ros_topics']);add('device_type');add('serial_no');add('required');add('pointcloud');add('fps');add('sync_rgb_depth');add('timestamp_alignment');add('max_actual_exposure_us');add('rgbd_max_midpoint_skew_ms');add('camera_max_error_ms');
+      const controls={};
+      const add=(key,options=null)=>{
+        const control=scalar(key,camera[key],value=>{
+          const old=camera.id;
+          camera[key]=key==='id'?value.trim():value;
+          if(key==='id'&&camera.namespace===old){camera.namespace=camera.id;if(controls.namespace)controls.namespace.value=camera.namespace;}
+          if(key==='backend'||key==='device_type')renderForm();
+        },{options});
+        controls[key]=control.querySelector('input,select');grid.append(control);
+      };
+      add('id');controls.id.addEventListener('blur',()=>{controls.id.value=camera.id;});
+      controls.id.parentElement.append(el('small','示例：camera_left；1–64 个字符，自动去除首尾空白。'));
+      add('enabled');add('backend',['realsense','ros_topics']);add('device_type');add('serial_no');add('required');add('pointcloud');add('fps');add('sync_rgb_depth');add('timestamp_alignment');add('max_actual_exposure_us');add('rgbd_max_midpoint_skew_ms');add('camera_max_error_ms');
       if(camera.backend==='realsense'){
         add('namespace');add('camera_name');add('width');add('height');add('color_format');add('depth_format');add('align_depth');
         add('depth_auto_exposure');if(camera.depth_auto_exposure){add('depth_auto_exposure_limit_us');add('depth_auto_gain_limit');}else{add('depth_exposure_us');add('depth_gain');}

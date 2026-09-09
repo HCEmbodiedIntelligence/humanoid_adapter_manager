@@ -741,7 +741,7 @@ class ConfigurationManager:
             with tempfile.TemporaryDirectory(
                     dir=self.state_root, prefix=".validate-") as temporary:
                 root = Path(temporary) / "root"
-                self._stage(robot_id, candidate, root)
+                value['cameras'] = self._stage(robot_id, candidate, root)
                 revision = self._persist_revision(robot_id, root, value)
             index.update(
                 draft=value, latest=revision, name=value["name"], etag=uuid.uuid4().hex
@@ -751,6 +751,7 @@ class ConfigurationManager:
         return self.get(robot_id)
 
     def _stage(self, robot_id, index, root):
+        """Stage validated resources and return cameras for matching saved metadata."""
         document = normalize_document(index["draft"])
         if not isinstance(document["name"], str) or not document["name"].strip():
             raise DeploymentError("机器人名称不能为空")
@@ -885,6 +886,7 @@ class ConfigurationManager:
         _write_yaml(robot / "initial_poses.yaml", {"schema_version": 1, "initial_poses": initial_poses})
         write_checksums(robot)
         resolve_robot_deployment(root, robot_id)
+        return cameras
 
     def validate(self, robot_id, etag, save=False):
         with self.lock():
@@ -892,8 +894,9 @@ class ConfigurationManager:
             self._check_etag(index, etag)
             with tempfile.TemporaryDirectory(dir=self.state_root, prefix=".validate-") as temporary:
                 root = Path(temporary) / "root"
-                self._stage(robot_id, index, root)
+                cameras = self._stage(robot_id, index, root)
                 if save:
+                    index['draft']['cameras'] = cameras
                     revision = self._persist_revision(robot_id, root, index["draft"])
                     index.update(latest=revision, name=index["draft"]["name"], etag=uuid.uuid4().hex)
                     index.pop('draft_source_revision', None)

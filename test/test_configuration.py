@@ -362,6 +362,31 @@ def test_robot_camera_configuration_is_versioned_deployed_and_exported(manager, 
     assert imported['draft']['cameras'] == robot['draft']['cameras']
 
 
+@pytest.mark.parametrize('save_draft', [False, True])
+def test_save_normalizes_pasted_camera_id_and_rejects_bad_entries_atomically(manager, save_draft):
+    robot = create(manager)
+    doc = copy.deepcopy(robot['draft'])
+    doc['cameras'] = [{'id': ' \tcamera_left\n', 'namespace': ' \tcamera_left\n'}]
+    if save_draft:
+        draft = manager.draft('lab', doc, robot['etag'])
+        saved = manager.validate('lab', draft['etag'], save=True)
+    else:
+        saved = manager.save('lab', doc, robot['etag'])
+    camera = saved['saved']['cameras'][0]
+    assert camera['id'] == camera['namespace'] == 'camera_left'
+    assert camera['rgb_topic'] == '/camera_left/camera/color/image_raw'
+    assert camera['rgbd_topic'] == '/camera_left/normalized/rgbd'
+    assert manager.get('lab')['draft']['cameras'] == [camera]
+
+    invalid = copy.deepcopy(saved['draft'])
+    invalid['cameras'].append({'id': 'camera_right\u200b'})
+    with pytest.raises(DeploymentError, match=r'cameras\[1\].id'):
+        manager.save('lab', invalid, saved['etag'])
+    unchanged = manager.get('lab')
+    assert unchanged['latest'] == saved['latest']
+    assert unchanged['draft'] == saved['draft']
+
+
 def test_multiple_realsense_require_unique_serial_numbers(manager):
     robot = create(manager)
     doc = copy.deepcopy(robot['draft'])

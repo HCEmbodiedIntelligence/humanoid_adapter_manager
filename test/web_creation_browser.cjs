@@ -104,12 +104,14 @@ assert.equal(new URL(base).hostname, '127.0.0.1', 'Only a temporary loopback tes
 
     // Camera count comes from the editable list. Exercise four independent entries.
     await page.getByRole('tab', {name:'相机配置', exact:true}).click();
-    const cameraNames=['front','left','right','rear'];
+    const cameraNames=['front','camera_left','right','rear'];
     for(const [index,name] of cameraNames.entries()){
       await page.getByRole('button',{name:'添加 RealSense 相机',exact:true}).click();
       const field=page.locator('#robotForm > fieldset').last();
-      await field.getByLabel('标识',{exact:true}).fill(name);
+      await field.getByLabel('标识',{exact:true}).fill(index===1?` \u00a0${name} `:name);
       await field.getByLabel('相机型号',{exact:true}).fill(index===3?'d455':'d405');
+      assert.equal(await field.getByLabel('标识',{exact:true}).inputValue(),name);
+      assert.equal(await field.getByLabel('ROS 命名空间',{exact:true}).inputValue(),name);
       await field.getByLabel('设备序列号',{exact:true}).fill(`0000000000${index}`);
       await field.getByLabel('彩色图像话题',{exact:true}).fill(`/${name}/rgb`);
       await field.getByLabel('标准化 RGB-D 话题',{exact:true}).fill(`/${name}/rgbd`);
@@ -118,12 +120,22 @@ assert.equal(new URL(base).hostname, '127.0.0.1', 'Only a temporary loopback tes
     assert.equal(await page.locator('[data-camera-test]').count(),5);
     await page.locator('#robotForm > fieldset').last().getByRole('button',{name:'移除相机',exact:true}).click();
     assert.equal(await page.locator('[data-camera-test]').count(),4);
+    const invalidCamera=page.locator('#robotForm > fieldset').last().getByLabel('标识',{exact:true});
+    await invalidCamera.fill('rear\u200b');
+    const invalidSave=page.waitForResponse(r=>r.request().method()==='POST'&&r.url().endsWith('/save'));
+    await page.locator('#saveRobotConfig').click();
+    const invalidResponse=await invalidSave;
+    assert.equal(invalidResponse.status(),400);
+    await page.waitForFunction(()=>document.querySelector('#robotOperationResult').textContent.includes('cameras[3].id'));
+    assert.match(await page.locator('#robotOperationResult').textContent(),/\\u200b/);
+    await invalidCamera.fill('rear');
     const cameraSave=page.waitForResponse(r=>r.request().method()==='POST'&&r.url().endsWith('/save'));
     await page.locator('#saveRobotConfig').click();
     const cameraResponse=await cameraSave;
     assert.equal(cameraResponse.status(),200,await cameraResponse.text());
     const cameraDocument=(await cameraResponse.json()).saved;
     assert.deepEqual(cameraDocument.cameras.map(c=>c.id),cameraNames);
+    assert.equal(cameraDocument.cameras[1].namespace,'camera_left');
     assert.equal(cameraDocument.cameras[3].serial_no,'00000000003');
     assert.equal(cameraDocument.cameras[3].rgb_topic,'/rear/rgb');
     const testPhoto=await page.evaluate(()=>{
