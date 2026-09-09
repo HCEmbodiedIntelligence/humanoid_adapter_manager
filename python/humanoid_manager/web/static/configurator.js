@@ -368,17 +368,21 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
         add('depth_auto_exposure');if(camera.depth_auto_exposure){add('depth_auto_exposure_limit_us');add('depth_auto_gain_limit');}else{add('depth_exposure_us');add('depth_gain');}
         add('color_auto_exposure');add('color_exposure_us');add('color_gain');
         const sharedExposureHint=el('p','D405 的 RGB 与深度共享 depth_module；上面的曝光和增益补偿设置同时作用于两路。','form-help');
+        const manualExposureHint=el('p','D435 RGB 原生自动曝光不支持设置曝光上限，因此使用手动曝光和增益。曝光不超过 5000 μs，按 100 μs 步长向下取整；亮度不足时可手动提高 RGB 增益。这三项以上方设置为准，高级参数不覆盖它们。深度自动曝光独立设置。','form-help');
         const autoExposureWarning=el('p','当前官方配置未给 RGB 自动曝光设置 5 ms 上限；需要严格上限时使用不超过 5000 μs 的手动曝光。','notice error');
-        field.append(sharedExposureHint,autoExposureWarning);
+        field.append(sharedExposureHint,manualExposureHint,autoExposureWarning);
         // Keep the model input mounted so typing retains focus, caret and scroll.
         updateColorFields=()=>{
-          const shared=String(camera.device_type).toLowerCase()==='d405';
+          const model=String(camera.device_type).toLowerCase(),shared=model==='d405';
+          const manualOnly=['d435','d435i','d435f','d435if'].includes(model);
+          if(manualOnly){camera.color_auto_exposure=false;controls.color_auto_exposure.checked=false;}
           for(const key of ['color_auto_exposure','color_exposure_us','color_gain']){
             const hidden=shared||(key!=='color_auto_exposure'&&camera.color_auto_exposure);
             controls[key].parentElement.classList.toggle('hidden',hidden);
-            controls[key].disabled=hidden;
+            controls[key].disabled=hidden||(manualOnly&&key==='color_auto_exposure');
           }
           sharedExposureHint.classList.toggle('hidden',!shared);
+          manualExposureHint.classList.toggle('hidden',!manualOnly);
           autoExposureWarning.classList.toggle('hidden',shared||!camera.color_auto_exposure);
         };
         updateColorFields();

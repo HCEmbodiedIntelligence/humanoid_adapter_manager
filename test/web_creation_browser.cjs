@@ -148,6 +148,14 @@ assert.equal(new URL(base).hostname, '127.0.0.1', 'Only a temporary loopback tes
     assert.equal(await editingCamera.getByLabel('RGB 手动曝光（μs）',{exact:true}).isVisible(),false);
     assert.ok(Math.abs(await page.evaluate(()=>window.scrollY)-scrollBefore)<2);
     assert.equal(await editingCamera.getByLabel('设备序列号',{exact:true}).inputValue(),'00000000001');
+    // D435 uses camera-side manual exposure; other models retain their controls.
+    const headCamera=page.locator('#robotForm > fieldset').last();
+    await headCamera.getByLabel('RGB 自动曝光',{exact:true}).check();
+    await headCamera.getByLabel('相机型号',{exact:true}).fill('d435');
+    assert.equal(await headCamera.getByLabel('RGB 自动曝光',{exact:true}).isChecked(),false);
+    assert.equal(await headCamera.getByLabel('RGB 自动曝光',{exact:true}).isDisabled(),true);
+    assert.equal(await headCamera.getByLabel('RGB 手动曝光（μs）',{exact:true}).isVisible(),true);
+    assert.equal(await headCamera.getByLabel('RGB 手动曝光（μs）',{exact:true}).inputValue(),'4500');
     const invalidCamera=page.locator('#robotForm > fieldset').last().getByLabel('标识',{exact:true});
     await invalidCamera.fill('rear\u200b');
     const invalidSave=page.waitForResponse(r=>r.request().method()==='POST'&&r.url().endsWith('/save'));
@@ -165,6 +173,8 @@ assert.equal(new URL(base).hostname, '127.0.0.1', 'Only a temporary loopback tes
     assert.deepEqual(cameraDocument.cameras.map(c=>c.id),cameraNames);
     assert.equal(cameraDocument.cameras[1].namespace,'camera_left');
     assert.equal(cameraDocument.cameras[3].serial_no,'00000000003');
+    assert.equal(cameraDocument.cameras[3].device_type,'d435');
+    assert.equal(cameraDocument.cameras[3].color_auto_exposure,false);
     assert.equal(cameraDocument.cameras[3].rgb_topic,'/rear/rgb');
     const testPhoto=await page.evaluate(()=>{
       const canvas=document.createElement('canvas');canvas.width=2;canvas.height=2;
