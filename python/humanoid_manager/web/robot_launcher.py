@@ -235,12 +235,22 @@ class RobotLauncher:
             return self.status()
 
     def log_tail(self):
+        """Keep startup diagnostics alongside recent output, with bounded reads."""
         if not self.log_path:
             return ''
         with Path(self.log_path).open('rb') as stream:
             stream.seek(0, os.SEEK_END)
-            stream.seek(max(0, stream.tell() - 16000))
-            return stream.read().decode(errors='replace')
+            size = stream.tell()
+            head_bytes, tail_bytes = 64000, 16000
+            stream.seek(0)
+            if size <= head_bytes + tail_bytes:
+                return stream.read(size).decode(errors='replace')
+            head = stream.read(head_bytes).decode(errors='replace')
+            stream.seek(size - tail_bytes)
+            tail = stream.read(tail_bytes).decode(errors='replace')
+        skipped = size - head_bytes - tail_bytes
+        return (f'{head}\n\n……中间省略 {skipped} 字节，以下为最新日志……\n'
+                f'完整日志文件：{self.log_path}\n\n{tail}')
 
 
 def register_launcher_routes(app, launcher):

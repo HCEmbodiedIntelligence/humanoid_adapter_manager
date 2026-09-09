@@ -62,6 +62,27 @@ def test_exclusive_robot_run_lease(tmp_path):
     acquire_robot_run_lock(tmp_path).close()
 
 
+@pytest.mark.parametrize('padding', [0, 16000, 79000, 80000, 200000])
+def test_log_preserves_startup_failure_and_shutdown_tail(tmp_path, padding):
+    launcher = RobotLauncher(SimpleNamespace(state_root=tmp_path), None)
+    assert launcher.log_tail() == ''
+    path = tmp_path / 'robot.log'
+    startup = '[ERROR] timestamp_adapter.py: missing message type\n'
+    shutdown = "相机退出：rcl node's context is invalid\n"
+    data = (startup + '.' * padding + shutdown).encode()
+    path.write_bytes(data)
+    launcher.log_path = str(path)
+    result = launcher.log_tail()
+    assert result.startswith(startup)
+    assert result.endswith(shutdown)
+    if len(data) <= 80000:
+        assert result == data.decode()
+    else:
+        assert f'中间省略 {len(data) - 80000} 字节' in result
+        assert str(path) in result
+        assert len(result.encode()) < 81000
+
+
 def test_port_bind_failure_never_autostarts_hardware(tmp_path, monkeypatch):
     pytest.importorskip('mcap')
     path = Path(__file__).resolve().parents[1] / 'scripts/configurator_launcher.py'
