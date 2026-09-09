@@ -37,7 +37,7 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
     color_format:'彩色格式',depth_format:'深度格式',pointcloud:'发布点云',align_depth:'深度空间对齐到彩色',timestamp_alignment:'将曝光中点对齐到 ROS 2 时间',sync_rgb_depth:'启用 RGB-D 成组同步',required:'训练必需来源',
     max_actual_exposure_us:'曝光要求上限（μs）',rgbd_max_midpoint_skew_ms:'RGB-D 曝光中点差上限（ms）',camera_max_error_ms:'图像到数据网格偏差上限（ms）',
     depth_auto_exposure:'深度 / 共享成像模块自动曝光',depth_exposure_us:'深度手动曝光（μs）',depth_gain:'深度手动增益 / 亮度补偿',depth_auto_exposure_limit_us:'深度自动曝光上限（μs）',depth_auto_gain_limit:'深度自动增益 / 亮度补偿上限',
-    color_auto_exposure:'RGB 自动曝光',color_exposure_us:'RGB 手动曝光（μs）',color_gain:'RGB 手动增益 / 亮度补偿',rgbd_topic:'标准化 RGB-D 话题',metadata_topic:'来源元数据话题',pointcloud_topic:'标准化点云话题',pointcloud_metadata_topic:'点云元数据话题',
+    color_auto_exposure:'RGB 自动曝光',color_exposure_us:'RGB 手动曝光（μs）',color_gain:'RGB 手动增益 / 亮度补偿',rgb_topic:'彩色图像话题',depth_topic:'深度图像话题',rgbd_topic:'标准化 RGB-D 话题',metadata_topic:'来源元数据话题',pointcloud_topic:'标准化点云话题',pointcloud_metadata_topic:'点云元数据话题',
     velocity_scale:'回位速度比例',acceleration_scale:'回位加速度比例',jerk_scale:'回位加加速度比例',timeout_sec:'回位超时（秒）',positions_rad:'目标位置（rad）',
   };
   const enums = {message_type:['twist','twist_stamped'],command_type:['joint_state','float64','gripper_action'],feedback_type:['joint_state','float64'],position_unit:['m','rad'],input_axis:['trigger','grip'],enable_button:['primary_axis_click','grip_button','trigger_button','primary','secondary','menu','secondary_axis_click'],forward_axis:['primary_y','primary_x','secondary_y','secondary_x','none'],lateral_axis:['none','primary_x','primary_y','secondary_x','secondary_y'],turn_axis:['primary_x','primary_y','secondary_x','secondary_y','none'],kind:['move_j','move_l','move_p','servo_j','servo_p'],controller:['left','right','head'],clutch_controller:['left','right'],mode:['udp','vrdata']};
@@ -49,6 +49,28 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
   function markDirty() {dirty=true;setText('#robotDraftState','未保存');setText('#robotOperationResult','');$('#robotOperationResult').classList.add('hidden');window.RobotLauncherUI?.changed();}
   function params(key) {return selected.draft.resources[key]?.[key==='driver_params'?'humanoid_driver_runtime':'humanoid_motion_control']?.ros__parameters || {};}
   function gripperParams(){return selected.draft.resources.gripper_params?.humanoid_gripper_runtime?.ros__parameters||null;}
+  function gripperOwners(){
+    const owners=(selected.draft.gripper_instances||[]).map(item=>({p:item.parameters.humanoid_gripper_runtime.ros__parameters,settings:item.settings}));
+    if(gripperParams())owners.push({p:gripperParams(),settings:selected.draft.plugin_settings?.gripper||{}});
+    return owners.map(owner=>({...owner,p:expandDevice(owner.p,owner.settings),settings:expandDevice(owner.settings,owner.settings)}));
+  }
+  function expandDevice(value,settings){
+    if(typeof value==='string')return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g,(match,key)=>settings.instance_parameters?.[key]??match);
+    if(Array.isArray(value))return value.map(v=>expandDevice(v,settings));
+    if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([k,v])=>[expandDevice(k,settings),expandDevice(v,settings)]));
+    return value;
+  }
+  function gripperOwner(name){return gripperOwners().find(item=>item.p.gripper_names.includes(name));}
+  function jsonField(form,title,value,change){
+    const details=el('details'),area=el('textarea');details.append(el('summary',title));area.rows=10;area.value=JSON.stringify(value,null,2);area.setAttribute('aria-label',title);
+    area.oninput=()=>{try{change(JSON.parse(area.value));area.setCustomValidity('');markDirty();}catch(error){area.setCustomValidity('请输入有效 JSON');}};details.append(area);form.append(details);
+  }
+  function deviceSettings(form,settings){
+    form.append(el('p','实例变量可在参数值和启动参数中以 ${变量名} 引用。保存后随机器人启动执行。','form-help'));
+    jsonField(form,'实例变量',settings.instance_parameters||{},value=>settings.instance_parameters=value);
+    jsonField(form,'启动步骤',settings.startup||[],value=>settings.startup=value);
+    jsonField(form,'公开能力与测试目标',settings.capabilities||{},value=>settings.capabilities=value);
+  }
   function choices(key) {
     if(enums[key])return enums[key];
     if(['base_frame','tip_frame','parent_frame','child_frame','tool_frame'].includes(key))return [...(selected.model_info.links||[]),...(selected.draft.resources.tool_config?.tools||[]).map(t=>t.name)];
@@ -108,6 +130,7 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
   function renderDriver(form){
     const p=params('driver_params');objectFields(form,p,['joint_names','vendor_joint_names','vendor_joint_groups','vendor_to_logical_scales','vendor_to_logical_offsets_rad','plugin_parameters']);
     pluginParameterFields(form,p);
+    selected.draft.plugin_settings??={};deviceSettings(form,selected.draft.plugin_settings.driver??={});
   }
   function renderJoints(form){
     const p=params('driver_params'),names=p.joint_names||[];
@@ -115,7 +138,7 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
     const toolbar=el('div',undefined,'joint-jog-toolbar'),copy=el('div');copy.append(el('strong','关节点动'),el('p','以实时反馈为起点，通过对应 MoveJ 通道移动一个小步长。'));const step=el('select');step.setAttribute('aria-label','关节点动步长');for(const value of [.5,1,2,5]){const option=el('option',`${value}°`);option.value=value;step.append(option);}step.value=String(jogStepDegrees);step.onchange=()=>{jogStepDegrees=Number(step.value);};const stepLabel=el('label','步长');stepLabel.append(step);toolbar.append(copy,stepLabel);form.append(toolbar);
     const jogReady=!dirty&&!selected.diff.length&&selected.deployed?.revision===selected.latest;
     const {wrapper,body}=table(['逻辑关节','厂商关节','厂商分组','比例 / 方向','零位偏移（rad）','点动']);form.append(wrapper);
-    names.forEach((name,i)=>{const row=el('tr');row.append(inputCell(name,v=>names[i]=v,(selected.model_info.joints||[]).filter(j=>j.type!=='fixed').map(j=>j.name)));
+    names.forEach((name,i)=>{const row=el('tr');row.append(inputCell(name,v=>names[i]=v,(selected.model_info.joints||[]).filter(j=>['revolute','continuous'].includes(j.type)).map(j=>j.name)));
       for(const key of ['vendor_joint_names','vendor_joint_groups','vendor_to_logical_scales','vendor_to_logical_offsets_rad'])row.append(inputCell(p[key][i],v=>p[key][i]=v));const actions=el('td',undefined,'joint-jog-actions'),minus=button('−',()=>jogJoint(name,-1)),plus=button('+',()=>jogJoint(name,1),'primary');minus.disabled=plus.disabled=!jogReady;minus.setAttribute('aria-label',`${name} 负向点动`);plus.setAttribute('aria-label',`${name} 正向点动`);actions.append(minus,plus);row.append(actions);body.append(row);});
     form.append(el('p',jogReady?'点击 − / + 会驱动当前运行的机器人；执行前仍会检查反馈、运行版本和遥操作状态。':'点动按钮需先保存、应用当前版本，并启动机械臂驱动与运动服务。','form-help'),el('p','比例为负数表示方向反转；修改逻辑关节时需同步模型分组，保存前会交叉校验。','form-help'));
   }
@@ -130,13 +153,14 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
   function selectGripperPlugin(pluginId){
     if(!pluginId){selected.draft.gripper_driver=null;delete selected.draft.resources.gripper_params;const receiver=selected.draft.resources.hc_teleop_config;if(receiver)delete receiver.grippers;markDirty();renderForm();return;}
     let item=catalog.gripper_drivers?.[pluginId];if(!item&&selected.saved.gripper_driver?.plugin_id===pluginId)item={name:selected.saved.gripper_driver.name,template:selected.saved.resources.gripper_params};if(!item?.template){toast('所选夹爪插件没有可编辑的配置模板',true);return;}
-    selected.draft.gripper_driver={plugin_id:pluginId,name:item.name||pluginId};selected.draft.resources.gripper_params=clone(item.template);syncReceiverGrippers(gripperParams(),{removeUnknown:true});markDirty();renderForm();
+    selected.draft.gripper_driver={plugin_id:pluginId,name:item.name||pluginId};selected.draft.resources.gripper_params=clone(item.template);selected.draft.plugin_settings??={};selected.draft.plugin_settings.gripper=clone(item.settings||{});syncReceiverGrippers(gripperParams(),{removeUnknown:true});markDirty();renderForm();
   }
   function runtimeControlsReady(){return !!selected&&!dirty&&!selected.diff.length&&selected.deployed?.revision===selected.latest;}
-  async function testGripper(name,target){
+  async function testGripper(name,target,status){
     if(!runtimeControlsReady()||selected.saved.gripper_driver?.plugin_id!==selected.draft.gripper_driver?.plugin_id)return notify('请先保存并应用当前夹爪配置，再执行动作测试。',true);
     const label=target==='open'?'打开':'闭合';if(!confirm(`将驱动 ${name} 执行测试${label}，确认周围安全后继续。`))return;
-    await operation(async()=>{const result=await post(`${robotUrl()}/grippers/${encodeURIComponent(name)}/test`,{target});notify(`${name} 测试${label}完成：${Number(result.final_position).toFixed(4)}`);});
+    status.textContent=`正在测试${label}，等待夹爪位置反馈…`;
+    await operation(async()=>{try{const result=await post(`${robotUrl()}/grippers/${encodeURIComponent(name)}/test`,{target});status.textContent=`测试${label}完成，实测位置：${Number(result.final_position).toFixed(4)}`;notify(`${name} ${status.textContent}`);}catch(error){status.textContent=`测试失败：${error.message}`;throw error;}});
   }
   async function jogJoint(name,direction){
     if(!runtimeControlsReady())return notify('请先保存并应用当前机器人配置，再执行关节点动。',true);
@@ -144,13 +168,25 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
     await operation(async()=>{const result=await post(`${robotUrl()}/joints/${encodeURIComponent(name)}/jog`,{delta_rad:delta});notify(`${name} 点动完成：${(result.initial_position_rad*180/Math.PI).toFixed(2)}° → ${(result.target_position_rad*180/Math.PI).toFixed(2)}°`);});
   }
   function renderGripperDriver(form){
-    const current=selected.draft.gripper_driver,plugins=availableGripperPlugins(),toolbar=el('div',undefined,'gripper-plugin-toolbar'),intro=el('div');intro.append(el('strong',`已识别 ${plugins.length} 个夹爪插件`),el('p','选择插件后保存并应用，下一次启动机器人时加载。'));toolbar.append(intro,button('导入夹爪插件',()=>showImportDialog('plugin','gripper_driver','导入夹爪插件'),'primary'));form.append(toolbar);
-    const rack=el('div',undefined,'gripper-plugin-rack');for(const [id,item]of plugins){const active=current?.plugin_id===id,card=el('article',undefined,`gripper-plugin-card${active?' active':''}`),heading=el('div',undefined,'gripper-plugin-heading'),title=el('div');title.append(el('span',active?'当前使用':'可用插件','gripper-plugin-state'),el('h4',item.name||id),el('code',id));heading.append(title,el('i',undefined,'gripper-plugin-lamp'));card.append(heading);const template=item.template?.humanoid_gripper_runtime?.ros__parameters,names=template?.gripper_names||[];card.append(el('p',names.length?`包含 ${names.length} 个夹爪：${names.join('、')}`:'插件未声明夹爪数量','form-help'),el('p',item.plugin_class||template?.plugin_class||'插件类未知','gripper-plugin-class'));const action=button(active?'正在使用':'切换到此插件',()=>selectGripperPlugin(id),active?'':'primary');action.disabled=active||!!item.error;card.append(action);rack.append(card);}form.append(rack);
-    if(!plugins.length)form.append(el('div','尚未导入夹爪插件。点击“导入夹爪插件”选择 gripper_driver ZIP。','gripper-plugin-empty'));
-    const p=gripperParams();if(!p)return;
-    const ready=!dirty&&!selected.diff.length&&selected.deployed?.revision===selected.latest&&selected.saved.gripper_driver?.plugin_id===current?.plugin_id,test=el('section',undefined,'gripper-test-panel');const heading=el('div',undefined,'row-heading');heading.append(el('h4','夹爪动作测试'),button('从机器人移除',()=>selectGripperPlugin(''),'danger'));test.append(heading,el('p',ready?'测试会使用当前运行插件的统一 JointState 接口，并等待实测反馈。':'保存、应用并启动夹爪运行时后才能测试。','form-help'));
-    const values=pluginParameters(p);for(const name of p.gripper_names||[]){const row=el('div',undefined,'gripper-test-row'),info=el('div');const minimum=values[`${name}.min_position`],maximum=values[`${name}.max_position`];info.append(el('strong',name),el('small',minimum!==undefined&&maximum!==undefined?`范围 ${minimum} – ${maximum} ${(p.position_units||[])[p.gripper_names.indexOf(name)]||''}`:'开合位置由插件配置'));const actions=el('div',undefined,'button-row'),open=button('测试打开',()=>testGripper(name,'open'),'primary'),close=button('测试闭合',()=>testGripper(name,'close'));open.disabled=close.disabled=!ready;actions.append(open,close);row.append(info,actions);test.append(row);}form.append(test);
-    const details=el('details'),summary=el('summary','查看当前插件配置'),content=el('pre',JSON.stringify(p,null,2),'compact-data');details.append(summary,content);form.append(details);
+    const instances=selected.draft.gripper_instances??=[],plugins=availableGripperPlugins();
+    form.append(el('p','每个实例独立选择插件、通信参数和启动步骤。可组合不同厂商的夹爪；逻辑夹爪名称不能重复。','form-help'),button('导入夹爪插件',()=>showImportDialog('plugin','gripper_driver','导入夹爪插件')));
+    const convert=()=>{if(!gripperParams())return;instances.push({instance_id:'default',...selected.draft.gripper_driver,parameters:clone(selected.draft.resources.gripper_params),settings:clone(selected.draft.plugin_settings?.gripper||{})});selected.draft.gripper_driver=null;delete selected.draft.resources.gripper_params;delete selected.draft.plugin_settings?.gripper;};
+    const choice=el('select');choice.setAttribute('aria-label','新夹爪实例插件');for(const [id,item] of plugins){const option=el('option',item.name||id);option.value=id;choice.append(option);}
+    form.append(choice,button('添加夹爪实例',()=>{const item=catalog.gripper_drivers?.[choice.value];if(!item?.template)return toast('请先导入有效夹爪插件',true);convert();let n=1;while(instances.some(i=>i.instance_id===`gripper_${n}`))n++;instances.push({instance_id:`gripper_${n}`,plugin_id:choice.value,name:item.name||choice.value,parameters:clone(item.template),settings:clone(item.settings||{})});markDirty();renderForm();},'primary'));
+    const renderInstance=(item,remove)=>{
+      const field=el('fieldset'),heading=el('div',undefined,'row-heading');heading.append(el('h4',item.name),button('移除实例',remove));field.append(heading);
+      if(item.instance_id)field.append(scalar('instance_id',item.instance_id,v=>item.instance_id=v));
+      field.append(el('p',item.plugin_id,'form-help'));
+      const p=item.parameters.humanoid_gripper_runtime.ros__parameters;objectFields(field,p,['plugin_parameters']);pluginParameterFields(field,p);deviceSettings(field,item.settings);
+      for(const name of expandDevice(p,item.settings).gripper_names||[]){const test=el('section'),row=el('div',undefined,'button-row'),status=el('p','保存并应用配置、启动夹爪后，可手动测试开合。','form-help');test.dataset.gripperTest=name;status.setAttribute('role','status');row.append(el('strong',name));for(const [target,label] of [['open','测试打开'],['close','测试闭合']]){const b=button(label,()=>testGripper(name,target,status));b.disabled=!runtimeControlsReady();row.append(b);}test.append(row,status);field.append(test);}
+      form.append(field);
+    };
+    if(gripperParams()){
+      selected.draft.plugin_settings??={};selected.draft.plugin_settings.gripper??={};
+      renderInstance({...selected.draft.gripper_driver,parameters:selected.draft.resources.gripper_params,settings:selected.draft.plugin_settings.gripper},()=>selectGripperPlugin(''));
+      form.append(button('转换为独立实例',()=>{convert();markDirty();renderForm();}));
+    }
+    instances.forEach((item,index)=>renderInstance(item,()=>{instances.splice(index,1);const receiver=selected.draft.resources.hc_teleop_config;if(receiver?.grippers)receiver.grippers=receiver.grippers.filter(g=>gripperOwner(g.joint_name));markDirty();renderForm();}));
   }
   function renderModel(form){
     const info=selected.model_info;form.append(el('p',`${info.name||'机器人模型'} · ${info.links?.length||0} 个连杆 · ${info.joints?.length||0} 个关节`));
@@ -161,9 +197,9 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
       const field=el('fieldset');field.append(el('legend',`关节组：${group}`));const rows=table(['关节（按运动顺序）','下限（rad）','上限（rad）','操作']);field.append(rows.wrapper);
       const names=p[`groups.${group}`],lower=p[`group_lower_limits.${group}`],upper=p[`group_upper_limits.${group}`];
       const sync=()=>{if(sdk.joint_groups)sdk.joint_groups[group]=clone(names);};
-      names.forEach((name,i)=>{const row=el('tr');row.append(inputCell(name,v=>{names[i]=v;sync();},info.joints.filter(j=>j.type!=='fixed').map(j=>j.name)),inputCell(lower[i],v=>lower[i]=v),inputCell(upper[i],v=>upper[i]=v));
+      names.forEach((name,i)=>{const row=el('tr');row.append(inputCell(name,v=>{names[i]=v;sync();},info.joints.filter(j=>['revolute','continuous'].includes(j.type)).map(j=>j.name)),inputCell(lower[i],v=>lower[i]=v),inputCell(upper[i],v=>upper[i]=v));
         const actions=el('td');actions.append(button('↑',()=>{if(!i)return;for(const array of [names,lower,upper])[array[i-1],array[i]]=[array[i],array[i-1]];sync();markDirty();renderForm();}),button('移除',()=>{for(const array of [names,lower,upper])array.splice(i,1);sync();markDirty();renderForm();}));row.append(actions);rows.body.append(row);});
-      field.append(button('添加关节',()=>{names.push(info.joints.find(j=>j.type!=='fixed'&&!names.includes(j.name))?.name||'');lower.push(-1);upper.push(1);sync();markDirty();renderForm();}));form.append(field);
+      field.append(button('添加关节',()=>{names.push(info.joints.find(j=>['revolute','continuous'].includes(j.type)&&!names.includes(j.name))?.name||'');lower.push(-1);upper.push(1);sync();markDirty();renderForm();}));form.append(field);
     }
     const add=el('div',undefined,'array-row'),name=el('input');name.placeholder='新关节组名称';name.setAttribute('aria-label','新关节组名称');add.append(name,button('添加关节组',()=>{const key=name.value.trim();if(!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)||(p.joint_group_names||[]).includes(key))return toast('分组名无效或重复',true);p.joint_group_names.push(key);p[`groups.${key}`]=[];p[`group_lower_limits.${key}`]=[];p[`group_upper_limits.${key}`]=[];sdk.joint_groups[key]=[];markDirty();renderForm();}));form.append(add);
   }
@@ -259,24 +295,38 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
     form.append(button('加入录制方案',addPeripheralRecording));updatePeripheralState(live);
   }
   function renderGrippers(form){
-    const p=gripperParams(),receiver=selected.draft.resources.hc_teleop_config,grippers=receiver?.grippers||[];
-    form.append(el('p',p?'遥操作只连接独立夹爪运行时的通用 JointState 接口；实际设备话题和协议请在“夹爪驱动”页配置。':'当前机器人组合没有夹爪插件，无法保存夹爪遥操作配置。','form-help'));
-    const parameterValue=(name,key,fallback)=>{const entry=(p?.plugin_parameters||[]).find(value=>value.startsWith(`${name}.${key}=`));if(!entry)return fallback;const value=Number(entry.slice(entry.indexOf('=')+1));return Number.isFinite(value)?value:fallback;};
-    const sync=()=>{if(!p)return;for(const [index,g]of grippers.entries()){const name=(p.gripper_names||[]).includes(g.joint_name)?g.joint_name:p.gripper_names?.[index];if(!name)continue;g.command_type='joint_state';g.command_topic=p.platform_gripper_command_topic;g.feedback_type='joint_state';g.feedback_topic=p.platform_gripper_state_topic;g.joint_name=name;g.position_unit=p.position_units?.[p.gripper_names.indexOf(name)]||'m';}markDirty();renderForm();};
-    const tools=el('div',undefined,'button-row'),add=button('添加夹爪遥操作',()=>{const receiver=ensureReceiver();receiver.grippers??=[];const used=new Set(receiver.grippers.map(g=>g.joint_name)),name=(p?.gripper_names||[]).find(item=>!used.has(item));if(!name)return toast('夹爪插件中的逻辑夹爪都已添加',true);const i=p.gripper_names.indexOf(name),unit=p.position_units?.[i]||'m',minimum=parameterValue(name,'min_position',0),maximum=parameterValue(name,'max_position',unit==='m'?.04:1);receiver.grippers.push({id:name,enabled:false,controller:name.toLowerCase().includes('left')?'left':'right',input_axis:'trigger',enable_button:'grip_button',command_type:'joint_state',command_topic:p.platform_gripper_command_topic,feedback_type:'joint_state',feedback_topic:p.platform_gripper_state_topic,joint_name:name,position_unit:unit,open_position:maximum,closed_position:minimum,max_speed:unit==='m'?.05:1,max_effort:10,deadband:.01,rate_hz:20,feedback_timeout:.5});markDirty();renderForm();},'primary');add.disabled=!p;tools.append(add);if(grippers.length&&p)tools.append(button('同步夹爪驱动接口',sync));if(grippers.length)tools.append(button('加入录制方案',addPeripheralRecording));form.append(tools);
-    if(!grippers.length)form.append(el('p','尚未添加夹爪。可按插件配置添加单夹爪、双夹爪或多个独立夹爪。'));
-    grippers.forEach((g,index)=>{const field=el('fieldset'),heading=el('div',undefined,'row-heading');heading.append(el('h4',g.id),button('移除遥操作映射',()=>{grippers.splice(index,1);markDirty();renderForm();}));field.append(heading);const state=el('p','等待接收端状态','form-help');state.dataset.gripperState=g.id;field.append(state);if(p)field.append(el('p',`逻辑夹爪：${g.joint_name} · 命令 ${p.platform_gripper_command_topic} · 反馈 ${p.platform_gripper_state_topic} · ${g.position_unit}`,'form-help'));peripheralFields(field,g,['command_type','command_topic','feedback_type','feedback_topic','joint_name','position_unit']);field.append(el('p','需要新鲜反馈并持续按住使能按键才会输出开合目标。','form-help'));form.append(field);});updatePeripheralState(live);
+    const owners=gripperOwners(),receiver=selected.draft.resources.hc_teleop_config,grippers=receiver?.grippers||[];
+    form.append(el('p','从已配置的夹爪实例选择逻辑夹爪，并分配输入设备。保存时校验单位和接口。','form-help'));
+    const syncOne=(g)=>{const owner=gripperOwner(g.joint_name);if(!owner)return;const p=owner.p;g.command_type=g.feedback_type='joint_state';g.command_topic=p.platform_gripper_command_topic;g.feedback_topic=p.platform_gripper_state_topic;g.position_unit=p.position_units[p.gripper_names.indexOf(g.joint_name)];};
+    form.append(button('添加夹爪遥操作',()=>{const r=ensureReceiver();r.grippers??=[];const name=owners.flatMap(o=>o.p.gripper_names).find(n=>!r.grippers.some(g=>g.joint_name===n));if(!name)return toast('请先添加夹爪实例，或所有夹爪已映射',true);const owner=gripperOwner(name),targets=owner.settings.capabilities?.grippers?.[name]||{},g={id:name,joint_name:name,enabled:false,controller:'left',input_axis:'trigger',enable_button:'grip_button',open_position:targets.open_position??0,closed_position:targets.closed_position??0,max_speed:.05,max_effort:targets.max_effort??0,deadband:.01,rate_hz:20,feedback_timeout:.5};syncOne(g);r.grippers.push(g);markDirty();renderForm();},'primary'),button('同步夹爪驱动接口',()=>{grippers.forEach(syncOne);markDirty();renderForm();}));
+    if(grippers.length)form.append(button('加入录制方案',addPeripheralRecording));
+    grippers.forEach((g,index)=>{const field=el('fieldset');field.append(el('legend',g.id),button('移除遥操作映射',()=>{grippers.splice(index,1);markDirty();renderForm();}));peripheralFields(field,g,['command_type','command_topic','feedback_type','feedback_topic','joint_name','position_unit']);form.append(field);});
   }
 
   function cameraTemplate(id,device='d405'){
     return {id,enabled:true,backend:'realsense',device_type:device,serial_no:'',namespace:id,camera_name:'camera',width:640,height:480,fps:30,color_format:'RGB8',depth_format:'Z16',pointcloud:false,align_depth:false,sync_rgb_depth:true,timestamp_alignment:true,max_actual_exposure_us:5000,rgbd_max_midpoint_skew_ms:1,camera_max_error_ms:1,required:true,depth_auto_exposure:true,depth_exposure_us:4500,depth_gain:64,depth_auto_exposure_limit_us:4500,depth_auto_gain_limit:64,color_auto_exposure:false,color_exposure_us:4500,color_gain:64,parameters:{}};
   }
   function nextCameraId(prefix='camera'){let n=1;const cameras=selected.draft.cameras||(selected.draft.cameras=[]);while(cameras.some(c=>c.id===prefix+n))n++;return prefix+n;}
+  function cameraTest(field,camera){
+    const test=el('section',undefined,'camera-test'),status=el('p','保存相机配置并启动相机后，点击拍照查看一帧彩色图像。','form-help'),photo=el('img');
+    test.dataset.cameraTest=camera.id;status.setAttribute('role','status');photo.hidden=true;photo.alt=`${camera.id} 拍照测试`;
+    const shoot=button('测试拍照',async()=>{
+      if(dirty||selected.diff.length){status.textContent='请先保存当前相机配置，再测试拍照。';return;}
+      shoot.disabled=true;photo.hidden=true;photo.removeAttribute('src');status.textContent='正在等待相机图像…';
+      try{
+        const result=await api(`${robotUrl()}/cameras/${encodeURIComponent(camera.id)}/snapshot?revision=${encodeURIComponent(selected.latest)}`);
+        photo.src=result.image_data_url;photo.hidden=false;
+        status.textContent=`${result.camera_id} · ${result.device_type} · 配置序列号 ${result.serial_no||'未指定'} · ${result.width} × ${result.height} · ${result.topic} · ${new Date(result.received_at*1000).toLocaleTimeString()}`;
+      }catch(error){status.textContent=`拍照失败：${error.message}`;}
+      finally{shoot.disabled=!camera.enabled;}
+    });
+    shoot.disabled=!camera.enabled;test.append(shoot,status,photo);field.append(test);
+  }
   async function syncCamerasToCapture(){
     await saveRobotConfiguration(false);
     const capture=await api('/api/capture'),cfg=clone(capture.config);
     for(const [id,source] of Object.entries(cfg.sources))if(source.managed_robot_camera){delete cfg.sources[id];}
-    const active=selected.draft.cameras.filter(c=>c.enabled);
+    const active=selected.draft.cameras.filter(c=>c.enabled).map(c=>expandDevice(c,c));
     for(const camera of active){
       const base=camera.backend==='ros_topics'?'':`/${camera.namespace}/normalized`;
       cfg.sources[camera.id]={kind:'rgbd',transport:'ros_rgbd',topic:camera.rgbd_topic||base+'/rgbd',metadata_topic:camera.metadata_topic||base+'/metadata',fps:camera.fps||30,exposure:{max_actual_us:camera.max_actual_exposure_us||5000,auto:camera.device_type==='d405'?camera.depth_auto_exposure:camera.color_auto_exposure,auto_exposure_limit_us:camera.depth_auto_exposure_limit_us||4500,auto_gain_limit:camera.depth_auto_gain_limit||64},sync_mode:camera.sync_rgb_depth===false?'unsynchronized':String(camera.device_type).toLowerCase()==='d405'?'shared_stereo_free_run':'driver_frameset_free_run',trigger_origin:null,temporal_fusion:false,required:camera.required!==false,managed_robot_camera:true,camera_model:camera.device_type||camera.backend,serial_no:camera.serial_no||'',timestamp_alignment:camera.timestamp_alignment!==false};
@@ -290,26 +340,37 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
   }
   function renderCameras(form){
     const cameras=selected.draft.cameras||(selected.draft.cameras=[]);
-    form.append(el('p','按机器人逐台填写相机型号和序列号。所有 RGB-D 相机使用同一组要求：曝光与增益补偿、RGB-D 成组同步、曝光中点映射到 ROS 2 时间。RealSense 由独立 humanoid_camera launch 启动；其他相机由各自 ROS 驱动实现同一输入契约。','form-help'));
+    form.append(el('p','按机器人逐台填写相机型号和序列号。所有 RGB-D 相机使用同一组要求：曝光与增益补偿、RGB-D 成组同步、曝光中点映射到 ROS 2 时间。RealSense 由独立 humanoid_camera launch 启动；其他相机可在下方声明 ROS 驱动启动步骤和统一数据话题，随机器人一起启动。','form-help'));
     const tools=el('div',undefined,'button-row');
     tools.append(button('添加 RealSense 相机',()=>{const id=nextCameraId();cameras.push(cameraTemplate(id,'d405'));markDirty();renderForm();},'primary'),button('添加其他 ROS 2 相机',()=>{const id=nextCameraId();cameras.push({...cameraTemplate(id,'custom_rgbd'),backend:'ros_topics',rgbd_topic:`/${id}/normalized/rgbd`,metadata_topic:`/${id}/normalized/metadata`,pointcloud_topic:`/${id}/normalized/points`,pointcloud_metadata_topic:`/${id}/normalized/points_metadata`});markDirty();renderForm();}),button('同步到连续采集方案',()=>operation(syncCamerasToCapture)));
     form.append(tools);
-    if(!cameras.length)form.append(el('p','尚未配置相机。可按机器人实际设备添加任意数量。'));
+    form.append(el('p',`已配置 ${cameras.length} 台相机，启用 ${cameras.filter(c=>c.enabled).length} 台。可按实际设备增删，当前最多支持 16 台。`));
     cameras.forEach((camera,index)=>{
       const field=el('fieldset'),heading=el('div',undefined,'row-heading');heading.append(el('h4',camera.id||`相机 ${index+1}`),button('移除相机',()=>{cameras.splice(index,1);markDirty();renderForm();}));field.append(heading);
       const grid=el('div',undefined,'parameter-grid');field.append(grid);
       const add=(key,options=null)=>grid.append(scalar(key,camera[key],value=>{const old=key==='id'?camera.id:null;camera[key]=value;if(key==='id'&&camera.namespace===old)camera.namespace=value;if(key==='backend'||key==='device_type')renderForm();},{options}));
       add('id');add('enabled');add('backend',['realsense','ros_topics']);add('device_type');add('serial_no');add('required');add('pointcloud');add('fps');add('sync_rgb_depth');add('timestamp_alignment');add('max_actual_exposure_us');add('rgbd_max_midpoint_skew_ms');add('camera_max_error_ms');
-      if(camera.backend==='ros_topics'){
-        for(const key of ['rgbd_topic','metadata_topic'])add(key);
-        if(camera.pointcloud)for(const key of ['pointcloud_topic','pointcloud_metadata_topic'])add(key);
-      }else{
+      if(camera.backend==='realsense'){
         add('namespace');add('camera_name');add('width');add('height');add('color_format');add('depth_format');add('align_depth');
         add('depth_auto_exposure');if(camera.depth_auto_exposure){add('depth_auto_exposure_limit_us');add('depth_auto_gain_limit');}else{add('depth_exposure_us');add('depth_gain');}
         if(String(camera.device_type).toLowerCase()==='d405')field.append(el('p','D405 的 RGB 与深度共享 depth_module；上面的曝光和增益补偿设置同时作用于两路。','form-help'));
         else{add('color_auto_exposure');if(camera.color_auto_exposure)field.append(el('p','当前官方配置未给 RGB 自动曝光设置 5 ms 上限；需要严格上限时使用不超过 5000 μs 的手动曝光。','notice error'));else{add('color_exposure_us');add('color_gain');}}
         const details=el('details'),summary=el('summary','高级官方驱动参数'),area=el('textarea');area.rows=5;area.value=JSON.stringify(camera.parameters||{},null,2);area.onchange=()=>{try{camera.parameters=JSON.parse(area.value);area.setCustomValidity('');markDirty();}catch(_){area.setCustomValidity('请输入 JSON 对象');area.reportValidity();}};details.append(summary,area);field.append(details);
       }
+      const outputTopics=el('fieldset');outputTopics.append(el('legend','采集输出话题'));field.append(outputTopics);
+      if(camera.backend==='realsense')for(const [key,suffix] of [['rgb_topic','color/image_raw'],['depth_topic','depth/image_rect_raw']]){
+        const control=scalar(key,camera[key]||'',value=>{if(value)camera[key]=value;else delete camera[key];});
+        control.querySelector('input').placeholder=`/${camera.namespace||camera.id}/${camera.camera_name||'camera'}/${suffix}`;outputTopics.append(control);
+      }
+      for(const [key,suffix] of [['rgbd_topic','rgbd'],['metadata_topic','metadata'],...(camera.pointcloud?[['pointcloud_topic','points'],['pointcloud_metadata_topic','points_metadata']]:[])]){
+        const fallback=`/${camera.namespace||camera.id}/normalized/${suffix}`;
+        const control=scalar(key,camera[key]||'',value=>{if(value)camera[key]=value;else delete camera[key];});
+        control.querySelector('input').placeholder=fallback;outputTopics.append(control);
+      }
+      outputTopics.append(el('p','填写完整话题名，例如 /front/rgbd；留空使用命名空间下的默认话题。每台相机使用不同的话题名。','form-help'));
+      jsonField(field,'相机启动步骤',camera.startup||[],value=>camera.startup=value);
+      jsonField(field,'相机实例变量',camera.instance_parameters||{},value=>camera.instance_parameters=value);
+      cameraTest(field,camera);
       form.append(field);
     });
     form.append(el('p','同时启用多台 RealSense 时必须填写各自唯一序列号。enable_sync 负责官方驱动的成组发布；物理同步能力仍由具体型号决定。管理器不回读曝光/增益，也不逐帧检查。保存并应用机器人版本后，managed_robot.launch.py 默认启动独立相机节点。','form-help'));

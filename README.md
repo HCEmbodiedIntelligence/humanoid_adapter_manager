@@ -24,7 +24,9 @@ ros2 launch robot_bringup registered_robot.launch.py
 
 已有网页监听地址、ROS 域和目录会保留；局域网访问可追加 `host:=0.0.0.0`。网页应只开放在可信局域网。
 机器人参数保存后用机器人重启按钮加载；网页自身的监听地址、ROS 域等系统设置仍需退出并重新启动整个 launch。
-OpenArmX 等厂商 launch 的接入配置见 `robot_bringup/launch/registered_robot.launch.py` 顶部 `EXTERNAL_BRINGUP`；
+机械臂驱动和夹爪插件可通过清单中的 `startup` 声明所需节点、厂商 launch 和初始化步骤，
+统一入口自动执行，切换设备无需修改主 launch，见 [插件启动依赖](docs/deploying_plugins.md#插件自身的启动依赖)。
+独立于插件管理的厂商 launch 仍可配置在 `robot_bringup/launch/registered_robot.launch.py` 顶部 `EXTERNAL_BRINGUP`；
 它们在机器人子进程中运行，随按钮控制，不与网页共用生命周期。
 
 ## 只启动网页（兼容模式）

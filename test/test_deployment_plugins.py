@@ -196,6 +196,13 @@ def _ros_topic_gripper_tree(root: Path) -> Path:
         "right_gripper.max_position=0.04",
         "feedback_timeout_s=0.5",
     ]
+    import importlib.util
+    packager = Path(__file__).resolve().parents[2] / 'humanoid_gripper/tools/create_deployment_bundle.py'
+    spec = importlib.util.spec_from_file_location('gripper_packager', packager)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    manifest.update(module.plugin_metadata(config))
+    _write_yaml(manifest_path, manifest)
     _write_yaml(config_path, config)
     return root
 

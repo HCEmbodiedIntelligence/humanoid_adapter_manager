@@ -3,9 +3,11 @@
 
 from pathlib import Path
 import json
+from typing import List
 from ament_index_python.packages import get_package_share_directory
 from humanoid_manager.runtime_state import acquire_deployment_lock, acquire_robot_run_lock, configuration_identity
 from humanoid_manager.startup import bringup_command, default_plan
+from humanoid_manager.plugin_startup import startup_actions
 
 _LEASES = []
 
@@ -16,11 +18,25 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource, Any
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 from humanoid_manager.deployment import (
     DEFAULT_PLUGIN_ROOT,
     resolve_robot_deployment,
 )
+
+
+def _typed_parameters(parameters):
+    """Keep resolved YAML types, including empty arrays and numeric-looking names."""
+    result = {}
+    for key, value in parameters.items():
+        if isinstance(value, str):
+            result[key] = ParameterValue(value, value_type=str)
+        elif isinstance(value, list) and all(isinstance(item, str) for item in value):
+            result[key] = ParameterValue(value, value_type=List[str])
+        else:
+            result[key] = value
+    return result
 
 
 def _launch_registered_robot(context):
@@ -36,7 +52,6 @@ def _launch_registered_robot(context):
     identity = configuration_identity(plugin_root, robot_id)
     resources = deployment.resources
     driver_environment = deployment.environment()
-    gripper_environment = deployment.gripper_environment()
     resource_environment = deployment.resource_environment()
     start_driver = LaunchConfiguration("start_driver")
     start_gripper = LaunchConfiguration("start_gripper")
@@ -54,7 +69,7 @@ def _launch_registered_robot(context):
             name="humanoid_driver_runtime",
             output="screen",
             parameters=[
-                str(resources["driver_params"]),
+                _typed_parameters(deployment.driver_parameters),
                 {
                     "plugin_class": deployment.driver_class,
                     "plugin_xml_paths": [
@@ -85,10 +100,11 @@ def _launch_registered_robot(context):
             on_exit=Shutdown(reason="humanoid motion server exited"),
         ),
     ]
+    vendor_actions = []
     if vendor:
         # The run lease is acquired before any vendor hardware can start.
         # Normal successful controller-spawner exits are not failures.
-        actions[0:0] = [
+        vendor_actions = [
             RegisterEventHandler(OnProcessExit(on_exit=lambda event, _context: (
                 [Shutdown(reason=f'底层启动进程异常退出: {event.returncode}')]
                 if event.returncode else []))),
@@ -98,28 +114,17 @@ def _launch_registered_robot(context):
             ]),
         ]
 
-    if deployment.gripper_class:
-        actions.insert(
-            1,
-            Node(
-                package="humanoid_driver_runtime",
-                executable="humanoid_gripper_runtime_node",
-                name="humanoid_gripper_runtime",
-                output="screen",
-                parameters=[
-                    str(resources["gripper_params"]),
-                    {
-                        "plugin_class": deployment.gripper_class,
-                        "plugin_xml_paths": [
-                            str(path) for path in deployment.gripper_plugin_xml_paths
-                        ],
-                    },
-                ],
-                additional_env=gripper_environment,
-                condition=IfCondition(start_gripper),
-                on_exit=Shutdown(reason="humanoid gripper runtime exited"),
-            ),
-        )
+    for instance in deployment.gripper_instances:
+        actions.insert(1, Node(
+            package="humanoid_driver_runtime", executable="humanoid_gripper_runtime_node",
+            name=instance.node_name, output="screen",
+            parameters=[_typed_parameters(instance.parameters), {
+                "plugin_class": instance.plugin_class,
+                "plugin_xml_paths": [str(instance.plugin_xml)],
+                "filter_unowned_commands": len(deployment.gripper_instances) > 1,
+            }], additional_env=instance.environment(), condition=IfCondition(start_gripper),
+            on_exit=Shutdown(reason=f"gripper instance {instance.instance_id} exited"),
+        ))
 
     if "hc_teleop_config" in resources:
         actions.append(
@@ -161,14 +166,22 @@ def _launch_registered_robot(context):
         ("start_motion", "humanoid_motion_control"),
         ("start_teleop", "hc_teleop_recv"),
     ]
-    if deployment.gripper_class:
-        expected_pairs.append(("start_gripper", "humanoid_gripper_runtime"))
+    expected_pairs.extend(("start_gripper", instance.node_name)
+                          for instance in deployment.gripper_instances)
     expected = [name for argument, name in expected_pairs
         if LaunchConfiguration(argument).perform(context).lower() in {"1", "true", "yes", "on"}]
     actions.append(Node(package="humanoid_manager", executable="configuration_status.py",
         name="humanoid_configuration_status", output="screen",
         parameters=[{"identity": json.dumps(identity), "expected_nodes": expected}]))
-    return actions
+    steps = []
+    for enabled, entries, environment in (
+        (start_driver, deployment.driver_startup, driver_environment),
+        *((start_gripper, instance.startup, instance.environment())
+          for instance in deployment.gripper_instances),
+    ):
+        if enabled.perform(context).lower() in {'1', 'true', 'yes', 'on'}:
+            steps.extend((entry, environment) for entry in entries)
+    return vendor_actions + startup_actions(steps, actions)
 
 
 def generate_launch_description():

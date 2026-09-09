@@ -218,6 +218,43 @@ class ConfiguratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(blocked.status, 409)
         execute.assert_not_called()
 
+    async def test_camera_snapshot_uses_saved_camera_and_reports_errors_without_hardware(self):
+        from humanoid_manager.web.camera_snapshot import CameraSnapshotError
+        self.runtime.config['ros']['enabled'] = True
+        document = {'cameras': [
+            {'id': name, 'device_type': 'd405', 'serial_no': f'00100{i}', 'rgb_topic': f'/{name}/rgb'}
+            for i, name in enumerate(['front', 'left', 'right', 'rear'])]}
+        detail = {'robot_id': 'lab', 'latest': 'r-0123456789abcdef', 'saved': document}
+        async def fake_call(operation, **arguments):
+            self.assertEqual((operation, arguments), ('get', {'robot_id': 'lab'}))
+            return detail
+        self.runtime.adapter_client.call = fake_call
+        url = '/api/adapters/robots/lab/cameras/{}/snapshot?revision=r-0123456789abcdef'
+        def capture(camera, domain_id):
+            self.assertEqual(domain_id, self.runtime.config['ros']['domain_id'])
+            return {**camera, 'image_data_url': 'data:image/jpeg;base64,test', 'width': 640, 'height': 480}
+        with patch('humanoid_manager.web.adapter_api.capture_camera_snapshot', side_effect=capture) as take:
+            for camera in document['cameras']:
+                response = await self.client.get(url.format(camera['id']))
+                self.assertEqual(response.status, 200, await response.text())
+                result = await response.json()
+                self.assertEqual(result['camera_id'], camera['id'])
+                self.assertEqual(result['serial_no'], camera['serial_no'])
+                self.assertEqual(result['topic'], camera['rgb_topic'])
+                self.assertEqual(response.headers['Cache-Control'], 'no-store')
+            self.assertEqual(take.call_count, 4)
+            wrong = await self.client.get(url.format('front').replace('r-0123456789abcdef', 'old'))
+            self.assertEqual(wrong.status, 409)
+            document['cameras'][0]['enabled'] = False
+            self.assertEqual((await self.client.get(url.format('front'))).status, 400)
+            self.assertEqual((await self.client.get(url.format('unknown'))).status, 400)
+            self.assertEqual(take.call_count, 4)
+        with patch('humanoid_manager.web.adapter_api.capture_camera_snapshot',
+                   side_effect=CameraSnapshotError('未收到图像，请检查序列号')):
+            response = await self.client.get(url.format('rear'))
+            self.assertEqual(response.status, 409)
+            self.assertIn('未收到图像', await response.text())
+
     async def test_joint_jog_uses_feedback_seeded_movej_without_touching_hardware(self):
         document = {'resources': {
             'motion_params': {'humanoid_motion_control': {'ros__parameters': {

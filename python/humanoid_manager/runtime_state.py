@@ -49,10 +49,9 @@ def configuration_identity(root: Path, robot_id: str) -> dict:
     paths = [deployment.manifest_path.parent]
     paths += [Path(root) / directory / robot["plugins"][kind] for kind, directory in (
         ("hardware_driver", "hardware_drivers"), ("robot_model", "robot_models"))]
-    if "gripper_driver" in robot["plugins"]:
-        paths.append(
-            Path(root) / "gripper_drivers" / robot["plugins"]["gripper_driver"]
-        )
+    from .deployment import gripper_references
+    paths.extend(Path(root) / 'gripper_drivers' / plugin_id
+                 for _, plugin_id in sorted(gripper_references(robot).items()))
     digest = hashlib.sha256()
     for path in paths:
         digest.update((path / "checksums.sha256").read_bytes())

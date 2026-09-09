@@ -13,7 +13,8 @@ class GripperCommandError(RuntimeError):
 def execute_gripper_test(command, domain_id):
     """Publish a bounded target while observing fresh measured gripper feedback."""
     required = {"command_topic", "state_topic", "name", "position", "max_effort", "timeout_sec"}
-    if not isinstance(command, dict) or set(command) != required:
+    if (not isinstance(command, dict) or not required <= command.keys()
+            or command.keys() - required - {'runtime_node'}):
         raise GripperCommandError("夹爪测试命令不完整")
     if not all(isinstance(command[key], str) and command[key] for key in
                ("command_topic", "state_topic", "name")):
@@ -120,6 +121,8 @@ def execute_gripper_test(command, domain_id):
                 pass
         if executor is not None and node is not None:
             executor.remove_node(node)
+        if executor is not None:
+            executor.shutdown()
         if node is not None:
             if subscription is not None:
                 node.destroy_subscription(subscription)

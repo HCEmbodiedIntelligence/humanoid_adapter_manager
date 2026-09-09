@@ -25,9 +25,10 @@ import yaml
 from .deployment import (
     DeploymentError, MAX_CONFIG_BYTES, _resolve_member, _safe_extract,
     deploy_archive, list_deployed, pack_directory, resolve_robot_deployment,
-    validate_archive, validate_tree, write_checksums,
+    validate_archive, validate_tree, write_checksums, gripper_references,
 )
 from .runtime_state import configuration_identity, deployment_lock
+from .plugin_metadata import settings_from_manifest, validate_settings, resolved_document
 
 
 class ConfigurationConflict(DeploymentError):
@@ -106,7 +107,8 @@ def validate_values(value, path=""):
         for key, item in value.items():
             if not isinstance(key, str):
                 raise DeploymentError(f"{path}: 配置字段名必须是字符串")
-            validate_values(item, f"{path}/{key}")
+            if key != 'instance_parameters':
+                validate_values(item, f"{path}/{key}")
             if key.endswith(("_hz", "_ms", "_s", "_rad_s", "_rad_s2", "_rad_s3", "_m_s", "_m_s2", "_m_s3")) and not isinstance(item, (dict, list)):
                 if isinstance(item, bool) or not isinstance(item, (int, float)) or item < 0:
                     raise DeploymentError(f"{path}/{key}: 必须是非负数")
@@ -145,114 +147,8 @@ def validate_recording(value):
 
 
 def validate_cameras(value):
-    """Validate robot-owned camera definitions without touching camera hardware."""
-    if not isinstance(value, list) or len(value) > 16:
-        raise DeploymentError("相机配置必须是列表，且最多 16 台")
-    result, identifiers, endpoints, serials = [], set(), set(), set()
-    ros_name = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
-    ros_topic = re.compile(r"/(?:[A-Za-z_][A-Za-z0-9_]*)(?:/[A-Za-z_][A-Za-z0-9_]*)*")
-    for raw in value:
-        if not isinstance(raw, dict):
-            raise DeploymentError("每台相机配置必须是对象")
-        camera = copy.deepcopy(raw)
-        ident = camera.get("id", "")
-        if not isinstance(ident, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", ident):
-            raise DeploymentError("相机 ID 需以小写字母开头，只允许小写字母、数字和下划线")
-        if ident in identifiers:
-            raise DeploymentError(f"相机 ID 重复: {ident}")
-        identifiers.add(ident)
-        camera.setdefault("enabled", True)
-        camera.setdefault("backend", "realsense")
-        camera.setdefault("required", True)
-        camera.setdefault("pointcloud", False)
-        camera.setdefault("device_type", "d405" if camera["backend"] == "realsense" else "custom_rgbd")
-        camera.setdefault("serial_no", "")
-        camera.setdefault("sync_rgb_depth", True)
-        camera.setdefault("timestamp_alignment", camera.get("normalize_timestamps", True))
-        camera.pop("normalize_timestamps", None)
-        camera.setdefault("max_actual_exposure_us", 5000)
-        camera.setdefault("rgbd_max_midpoint_skew_ms", 1.0)
-        camera.setdefault("camera_max_error_ms", 1.0)
-        for key in ("enabled", "required", "pointcloud", "sync_rgb_depth", "timestamp_alignment"):
-            if type(camera[key]) is not bool:
-                raise DeploymentError(f"{ident}.{key} 必须为布尔值")
-        if not isinstance(camera["device_type"], str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", camera["device_type"]):
-            raise DeploymentError(f"{ident}.device_type 无效")
-        if not isinstance(camera["serial_no"], str) or len(camera["serial_no"]) > 128 or any(c.isspace() for c in camera["serial_no"]):
-            raise DeploymentError(f"{ident}.serial_no 无效")
-        if camera["enabled"] and camera["serial_no"]:
-            if camera["serial_no"] in serials:
-                raise DeploymentError(f"相机序列号重复: {camera['serial_no']}")
-            serials.add(camera["serial_no"])
-        exposure = camera["max_actual_exposure_us"]
-        if type(exposure) is not int or not 1 <= exposure <= 5000:
-            raise DeploymentError(f"{ident}.max_actual_exposure_us 必须是 1–5000 的整数")
-        for key in ("rgbd_max_midpoint_skew_ms", "camera_max_error_ms"):
-            number = camera[key]
-            if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number) or not 0 < number <= 1000:
-                raise DeploymentError(f"{ident}.{key} 必须是 0–1000 的有限正数")
-        if camera["backend"] not in {"realsense", "ros_topics"}:
-            raise DeploymentError(f"{ident}: backend 只支持 realsense 或 ros_topics")
-        if camera["backend"] == "ros_topics":
-            camera.setdefault("fps", 30)
-            if type(camera["fps"]) is not int or not 1 <= camera["fps"] <= 240:
-                raise DeploymentError(f"{ident}.fps 必须是 1–240 的整数")
-            camera.setdefault("rgbd_topic", f"/{ident}/normalized/rgbd")
-            camera.setdefault("metadata_topic", f"/{ident}/normalized/metadata")
-            camera.setdefault("pointcloud_topic", f"/{ident}/normalized/points")
-            camera.setdefault("pointcloud_metadata_topic", f"/{ident}/normalized/points_metadata")
-            for key in ("rgbd_topic", "metadata_topic"):
-                if not isinstance(camera[key], str) or not ros_topic.fullmatch(camera[key]):
-                    raise DeploymentError(f"{ident}.{key} 必须是绝对 ROS 话题")
-            if camera["pointcloud"]:
-                for key in ("pointcloud_topic", "pointcloud_metadata_topic"):
-                    if not isinstance(camera[key], str) or not ros_topic.fullmatch(camera[key]):
-                        raise DeploymentError(f"{ident}.{key} 必须是绝对 ROS 话题")
-            result.append(camera)
-            continue
-        defaults = {
-            "namespace": ident, "camera_name": "camera", "width": 640, "height": 480, "fps": 30,
-            "color_format": "RGB8", "depth_format": "Z16", "align_depth": False,
-            "depth_auto_exposure": True, "depth_exposure_us": 4500, "depth_gain": 64,
-            "depth_auto_exposure_limit_us": 4500, "depth_auto_gain_limit": 64,
-            "color_auto_exposure": False, "color_exposure_us": 4500,
-            "color_gain": 64, "parameters": {},
-        }
-        for key, default in defaults.items():
-            camera.setdefault(key, default)
-        for key in ("namespace", "camera_name"):
-            if not isinstance(camera[key], str) or not ros_name.fullmatch(camera[key]):
-                raise DeploymentError(f"{ident}.{key} 不是有效 ROS 名称")
-        endpoint = (camera["namespace"], camera["camera_name"])
-        if endpoint in endpoints:
-            raise DeploymentError(f"相机 ROS 命名空间与节点名重复: /{endpoint[0]}/{endpoint[1]}")
-        endpoints.add(endpoint)
-        for key in ("align_depth", "depth_auto_exposure", "color_auto_exposure"):
-            if type(camera[key]) is not bool:
-                raise DeploymentError(f"{ident}.{key} 必须为布尔值")
-        for key, low, high in (("width", 1, 8192), ("height", 1, 8192), ("fps", 1, 240),
-                               ("depth_exposure_us", 1, 5000), ("depth_gain", 0, 10000),
-                               ("depth_auto_exposure_limit_us", 1, 5000), ("depth_auto_gain_limit", 1, 10000),
-                               ("color_exposure_us", 1, 5000), ("color_gain", 0, 10000)):
-            number = camera[key]
-            if type(number) is not int or not low <= number <= high:
-                raise DeploymentError(f"{ident}.{key} 必须是 {low}–{high} 的整数")
-        depth_setting = camera["depth_auto_exposure_limit_us"] if camera["depth_auto_exposure"] else camera["depth_exposure_us"]
-        if depth_setting > camera["max_actual_exposure_us"]:
-            raise DeploymentError(f"{ident}: 深度曝光设置不能超过曝光要求上限")
-        if camera["device_type"].lower() != "d405" and not camera["color_auto_exposure"] and camera["color_exposure_us"] > camera["max_actual_exposure_us"]:
-            raise DeploymentError(f"{ident}: RGB 手动曝光不能超过曝光要求上限")
-        for key in ("color_format", "depth_format"):
-            if not isinstance(camera[key], str) or not re.fullmatch(r"[A-Za-z0-9_]{1,32}", camera[key]):
-                raise DeploymentError(f"{ident}.{key} 无效")
-        if not isinstance(camera["parameters"], dict):
-            raise DeploymentError(f"{ident}.parameters 必须为对象")
-        validate_values(camera["parameters"], f"/cameras/{ident}/parameters")
-        result.append(camera)
-    active_realsense = [x for x in result if x["backend"] == "realsense" and x["enabled"]]
-    if len(active_realsense) > 1 and any(not x["serial_no"] for x in active_realsense):
-        raise DeploymentError("同时启用多台 RealSense 时，每台都必须填写唯一序列号")
-    return result
+    from humanoid_camera.configuration import validate_cameras as validate
+    return validate(value)
 
 
 def validate_initial_poses(value, resources):
@@ -434,27 +330,18 @@ def resolve_gripper_test(document, gripper_name, target):
     """Resolve an open/close test to the managed JointState gripper contract."""
     if target not in {"open", "close"}:
         raise DeploymentError("夹爪测试目标只能是 open 或 close")
-    try:
-        parameters = document["resources"]["gripper_params"][
-            "humanoid_gripper_runtime"
-        ]["ros__parameters"]
-        names = parameters["gripper_names"]
-    except (KeyError, TypeError) as error:
-        raise DeploymentError("当前机器人没有可测试的夹爪插件") from error
-    if gripper_name not in names:
-        raise DeploymentError("所选夹爪不在当前插件中")
-    plugin_parameters = {}
-    for entry in parameters.get("plugin_parameters", []):
-        if isinstance(entry, str) and "=" in entry:
-            key, value = entry.split("=", 1)
-            plugin_parameters[key] = value
-    prefix = f"{gripper_name}."
-    try:
-        minimum = float(plugin_parameters[prefix + "min_position"])
-        maximum = float(plugin_parameters[prefix + "max_position"])
-    except (KeyError, ValueError) as error:
-        minimum = maximum = None
-
+    document = normalize_document(document)
+    candidates = [(item['parameters'], item['settings']) for item in document['gripper_instances']]
+    if 'gripper_params' in document['resources']:
+        candidates.append((document['resources']['gripper_params'], document['plugin_settings'].get('gripper', {})))
+    candidates = [(resolved_document(params, settings), settings) for params, settings in candidates]
+    owner = next(((params['humanoid_gripper_runtime']['ros__parameters'], settings)
+                  for params, settings in candidates
+                  if gripper_name in params.get('humanoid_gripper_runtime', {}).get('ros__parameters', {}).get('gripper_names', [])), None)
+    if owner is None:
+        raise DeploymentError('所选夹爪不在当前插件中')
+    parameters, settings = owner
+    targets = resolved_document(settings.get('capabilities', {}), settings).get('grippers', {}).get(gripper_name, {})
     mapping = next((item for item in document["resources"].get(
         "hc_teleop_config", {}).get("grippers", [])
         if item.get("joint_name") == gripper_name), None)
@@ -464,16 +351,15 @@ def resolve_gripper_test(document, gripper_name, target):
         speed = abs(float(mapping.get("max_speed", 0.05)))
         distance = abs(float(mapping["open_position"]) - float(mapping["closed_position"]))
         timeout = min(15.0, max(2.0, distance / max(speed, 1.0e-6) * 1.5))
-    elif minimum is not None and maximum is not None:
-        position = maximum if target == "open" else minimum
-        effort = 0.0
+    elif "open_position" in targets and "closed_position" in targets:
+        position = targets["open_position"] if target == "open" else targets["closed_position"]
+        effort = targets.get("max_effort", 0.0)
         timeout = 5.0
     else:
         raise DeploymentError(f"{gripper_name}: 插件或遥操作配置没有定义测试开合位置")
     position = float(position)
     effort = float(effort)
-    if (not math.isfinite(position) or not math.isfinite(effort) or effort < 0.0 or
-            (minimum is not None and not minimum <= position <= maximum)):
+    if not math.isfinite(position) or not math.isfinite(effort) or effort < 0.0:
         raise DeploymentError(f"{gripper_name}: 测试位置或力度超出插件限制")
     return {
         "command_topic": parameters["platform_gripper_command_topic"],
@@ -482,6 +368,11 @@ def resolve_gripper_test(document, gripper_name, target):
         "position": position,
         "max_effort": effort,
         "timeout_sec": timeout,
+        "runtime_node": next(('humanoid_gripper_runtime' if item['instance_id'] == 'default' else
+                              'humanoid_gripper_runtime_' + item['instance_id']
+                              for item in document['gripper_instances']
+                              if gripper_name in resolved_document(item['parameters'], item['settings'])['humanoid_gripper_runtime']['ros__parameters']['gripper_names']),
+                             'humanoid_gripper_runtime'),
     }
 
 
@@ -490,6 +381,8 @@ def normalize_document(document):
     value.setdefault("cameras", [])
     value.setdefault("initial_poses", [])
     value.setdefault("gripper_driver", None)
+    value.setdefault('gripper_instances', [])
+    value.setdefault('plugin_settings', {})
     resources = value.get("resources")
     channel_config = resources.get("channel_config") if isinstance(resources, dict) else None
     channels = channel_config.get("channels", []) if isinstance(channel_config, dict) else []
@@ -514,6 +407,24 @@ def validate_gripper_selection(value):
     if not isinstance(name, str) or not name.strip() or len(name) > 100:
         raise DeploymentError("夹爪驱动名称需为 1–100 个字符")
     return {"plugin_id": plugin_id, "name": name.strip()}
+
+
+def validate_gripper_instances(instances):
+    if not isinstance(instances, list) or len(instances) > 16:
+        raise DeploymentError('gripper_instances 必须是最多 16 个实例的列表')
+    seen = set()
+    for item in instances:
+        if not isinstance(item, dict) or set(item) != {'instance_id', 'plugin_id', 'name', 'parameters', 'settings'}:
+            raise DeploymentError('夹爪实例需包含 instance_id、plugin_id、name、parameters 和 settings')
+        ident = item['instance_id']
+        if not isinstance(ident, str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,63}', ident) or ident in seen:
+            raise DeploymentError('夹爪实例 ID 必须是唯一的小写 ROS 名称')
+        seen.add(ident)
+        validate_gripper_selection({key: item[key] for key in ('plugin_id', 'name')})
+        if not isinstance(item['parameters'], dict):
+            raise DeploymentError('夹爪实例 parameters 必须为参数对象')
+        validate_settings(item['settings'])
+    return instances
 
 
 class ConfigurationManager:
@@ -562,6 +473,7 @@ class ConfigurationManager:
                         entry["template"] = _resource_document(
                             validated["_resources"]["gripper_params"]
                         )
+                        entry['settings'] = settings_from_manifest(validated)
                 except (OSError, yaml.YAMLError, AttributeError, DeploymentError):
                     entry["error"] = "无法读取插件清单"
         catalog["workspaces"] = []
@@ -583,6 +495,11 @@ class ConfigurationManager:
             root / "gripper_drivers" / gripper_id if gripper_id else None,
             robot_path,
         )
+
+    def _all_components(self, root, robot_id):
+        driver, model, gripper, robot = self._components(root, robot_id)
+        references = gripper_references(_yaml(robot / 'manifest.yaml'))
+        return [driver, model, *(root / 'gripper_drivers' / plugin_id for plugin_id in references.values()), robot]
 
     def _document(self, root, robot_id, recording=None, cameras=None, initial_poses=None):
         driver, model, gripper, robot = self._components(root, robot_id)
@@ -607,7 +524,17 @@ class ConfigurationManager:
                 "plugin_id": gripper_manifest["plugin_id"],
                 "name": gripper_manifest.get("name", gripper_manifest["plugin_id"]),
             }
+        instances = []
+        for ident, plugin_id in _yaml(robot / 'manifest.yaml')['plugins'].get('gripper_drivers', {}).items():
+            manifest = validate_tree(root / 'gripper_drivers' / plugin_id)
+            instances.append({'instance_id': ident, 'plugin_id': plugin_id, 'name': manifest['name'],
+                              'parameters': _resource_document(manifest['_resources']['gripper_params']),
+                              'settings': settings_from_manifest(manifest)})
+        settings = {'driver': settings_from_manifest(_yaml(driver / 'manifest.yaml'))}
+        if gripper:
+            settings['gripper'] = settings_from_manifest(_yaml(gripper / 'manifest.yaml'))
         return {"name": _yaml(robot / "manifest.yaml")["name"], "resources": resources,
+                'gripper_instances': instances, 'plugin_settings': settings,
                 "cameras": validate_cameras(cameras),
                 "initial_poses": validate_initial_poses(initial_poses, resources),
                 "gripper_driver": gripper_selection,
@@ -630,7 +557,7 @@ class ConfigurationManager:
 
     def create(
         self, robot_id, name, source_robot="", driver_id="", model_id="",
-        gripper_id="", source_workspace="",
+        gripper_id="", source_workspace="", gripper_ids=None,
     ):
         robot_id = _creation_id(robot_id, "配置 ID（robot_id）")
         if not isinstance(name, str) or not name.strip():
@@ -677,6 +604,15 @@ class ConfigurationManager:
             ]
             if source_gripper is not None:
                 component_specs.append((source_gripper, "gripper_drivers", "gripper"))
+            plural = {}
+            if source_robot:
+                plural = _yaml(source_root / 'robots' / source_robot / 'manifest.yaml')['plugins'].get('gripper_drivers', {})
+            elif gripper_ids:
+                if gripper_id:
+                    raise DeploymentError('gripper_id 和 gripper_ids 不能同时使用')
+                plural = gripper_references({'plugins': {'gripper_drivers': gripper_ids}})
+            component_specs.extend((source_root / 'gripper_drivers' / plugin_id, 'gripper_drivers', f'gripper.{ident}')
+                                   for ident, plugin_id in plural.items())
             for path, kind, _ in component_specs:
                 label = {"hardware_drivers": "机械臂驱动插件", "robot_models": "模型插件",
                          "gripper_drivers": "夹爪插件"}[kind]
@@ -708,6 +644,8 @@ class ConfigurationManager:
                 }
                 if source_gripper is not None:
                     plugins["gripper_driver"] = f"{robot_id}.gripper"
+                if plural:
+                    plugins['gripper_drivers'] = {ident: f'{robot_id}.gripper.{ident}' for ident in plural}
                 _write_yaml(robot / "manifest.yaml", {
                     "schema_version": 1,
                     "artifact_type": "robot_composition",
@@ -742,10 +680,26 @@ class ConfigurationManager:
         return result
 
     def _prepare_draft(self, index, document):
-        if not isinstance(document, dict) or set(document) != {"name", "resources", "recording", "cameras", "initial_poses", "gripper_driver"}:
+        if not isinstance(document, dict):
+            raise DeploymentError('配置必须为对象')
+        document = normalize_document(document)
+        if set(document) != {"name", "resources", "recording", "cameras", "initial_poses", "gripper_driver", 'gripper_instances', 'plugin_settings'}:
             raise DeploymentError("配置需包含 name、resources、cameras、initial_poses、gripper_driver 和 recording")
         document = normalize_document(document)
         selection = validate_gripper_selection(document["gripper_driver"])
+        settings = document['plugin_settings']
+        if not isinstance(settings, dict) or set(settings) - {'driver', 'gripper'}:
+            raise DeploymentError('plugin_settings 只能包含 driver 和 gripper')
+        previous = normalize_document(index['draft'])
+        if (selection and selection != previous['gripper_driver'] and
+                document['plugin_settings'].get('gripper') == previous['plugin_settings'].get('gripper')):
+            manifest = validate_tree(self.plugin_root / 'gripper_drivers' / selection['plugin_id'])
+            document['plugin_settings']['gripper'] = settings_from_manifest(manifest)
+        validate_gripper_instances(document['gripper_instances'])
+        if selection and document['gripper_instances']:
+            raise DeploymentError('单插件选择和多实例配置不能同时使用')
+        for value in settings.values():
+            validate_settings(value)
         has_gripper_resource = (
             isinstance(document.get("resources"), dict)
             and "gripper_params" in document["resources"]
@@ -792,6 +746,7 @@ class ConfigurationManager:
             index.update(
                 draft=value, latest=revision, name=value["name"], etag=uuid.uuid4().hex
             )
+            index.pop('draft_source_revision', None)
             atomic_json(self._workspace(robot_id) / "index.json", index)
         return self.get(robot_id)
 
@@ -804,7 +759,8 @@ class ConfigurationManager:
         cameras = validate_cameras(document["cameras"])
         initial_poses = validate_initial_poses(document["initial_poses"], document["resources"])
         gripper_selection = validate_gripper_selection(document["gripper_driver"])
-        shutil.copytree(self._revision(robot_id, index["latest"]) / "root", root)
+        base_revision = self._revision(robot_id, index.get('draft_source_revision', index['latest']))
+        shutil.copytree(base_revision / 'root', root)
         robot = root / "robots" / robot_id
         composition = _yaml(robot / "manifest.yaml")
         current_gripper_id = composition["plugins"].get("gripper_driver")
@@ -812,7 +768,7 @@ class ConfigurationManager:
             root / "gripper_drivers" / current_gripper_id if current_gripper_id else None
         )
         saved = normalize_document(json.loads(
-            (self._revision(robot_id, index["latest"]) / "document.json").read_text()
+            (base_revision / "document.json").read_text()
         ))
         if gripper_selection is None:
             composition["plugins"].pop("gripper_driver", None)
@@ -850,6 +806,40 @@ class ConfigurationManager:
                 _write_yaml(target / "manifest.yaml", manifest)
                 write_checksums(target)
             composition["plugins"]["gripper_driver"] = private_id
+        # Each instance owns a private copy. Retain sources until every copy is made,
+        # so converting the legacy instance or renaming instances works in one save.
+        previous = _yaml(root / 'robots' / robot_id / 'manifest.yaml')['plugins']
+        old_instances = {item['instance_id']: item for item in saved['gripper_instances']}
+        selected_instances = validate_gripper_instances(document['gripper_instances'])
+        new_refs = {}
+        for item in selected_instances:
+            ident = item['instance_id']
+            private_id = f'{robot_id}.gripper.{ident}'
+            target = root / 'gripper_drivers' / private_id
+            keep = (target.is_dir() and item['plugin_id'] == old_instances.get(ident, {}).get('plugin_id'))
+            if not keep:
+                source = self.plugin_root / 'gripper_drivers' / item['plugin_id']
+                snapshot_source = base_revision / 'root/gripper_drivers' / item['plugin_id']
+                if snapshot_source.is_dir():
+                    source = snapshot_source
+                validate_tree(source)
+                if target.exists():
+                    shutil.rmtree(target)
+                shutil.copytree(source, target)
+            manifest = _yaml(target / 'manifest.yaml')
+            manifest.update(plugin_id=private_id, **validate_settings(item['settings']))
+            _write_yaml(_resolve_member(target, manifest['resources']['gripper_params'], 'gripper_params'), item['parameters'])
+            _write_yaml(target / 'manifest.yaml', manifest)
+            write_checksums(target)
+            validate_tree(target)
+            new_refs[ident] = private_id
+        composition['plugins'].pop('gripper_drivers', None)
+        if new_refs:
+            composition['plugins']['gripper_drivers'] = new_refs
+        for plugin_id in previous.get('gripper_drivers', {}).values():
+            path = root / 'gripper_drivers' / plugin_id
+            if plugin_id not in new_refs.values() and path.exists():
+                shutil.rmtree(path)
         _write_yaml(robot / "manifest.yaml", composition)
 
         driver, model, gripper, robot = self._components(root, robot_id)
@@ -857,6 +847,10 @@ class ConfigurationManager:
             if path is None:
                 continue
             manifest = _yaml(path / "manifest.yaml")
+            settings_key = 'driver' if path == driver else 'gripper' if path == gripper else None
+            if settings_key in document['plugin_settings']:
+                manifest.update(validate_settings(document['plugin_settings'][settings_key]))
+                _write_yaml(path / 'manifest.yaml', manifest)
             if path == model:
                 if "hc_teleop_config" not in document["resources"]:
                     manifest["resources"].pop("hc_teleop_config", None)
@@ -902,12 +896,19 @@ class ConfigurationManager:
                 if save:
                     revision = self._persist_revision(robot_id, root, index["draft"])
                     index.update(latest=revision, name=index["draft"]["name"], etag=uuid.uuid4().hex)
+                    index.pop('draft_source_revision', None)
                     atomic_json(self._workspace(robot_id) / "index.json", index)
         return self.get(robot_id) if save else {"ok": True, "message": "配置及驱动/模型/通道关联校验通过"}
 
     def restore(self, robot_id, revision, etag):
         document = normalize_document(json.loads((self._revision(robot_id, revision) / "document.json").read_text()))
-        return self.draft(robot_id, document, etag)
+        with self.lock():
+            index = self._read(robot_id)
+            self._check_etag(index, etag)
+            index.update(draft=self._prepare_draft(index, document),
+                         draft_source_revision=revision, etag=uuid.uuid4().hex)
+            atomic_json(self._workspace(robot_id) / 'index.json', index)
+        return self.get(robot_id)
 
     def apply(self, robot_id, revision, etag):
         with self.lock(), deployment_lock(self.plugin_root):
@@ -917,12 +918,14 @@ class ConfigurationManager:
                 raise ConfigurationConflict("只能应用最新已保存版本；恢复历史版本后请先保存")
             root = self._revision(robot_id, revision) / "root"
             resolve_robot_deployment(root, robot_id)
-            sources = [source for source in self._components(root, robot_id) if source is not None]
+            sources = self._all_components(root, robot_id)
             composition = _yaml(root / "robots" / robot_id / "manifest.yaml")
-            stale_gripper = self.plugin_root / "gripper_drivers" / f"{robot_id}.gripper"
-            remove_stale_gripper = (
-                "gripper_driver" not in composition["plugins"] and stale_gripper.is_dir()
-            )
+            active_ids = set(gripper_references(composition).values())
+            old_manifest = self.plugin_root / 'robots' / robot_id / 'manifest.yaml'
+            old_ids = set(gripper_references(_yaml(old_manifest)).values()) if old_manifest.is_file() else set()
+            stale_grippers = [self.plugin_root / 'gripper_drivers' / ident for ident in old_ids - active_ids
+                              if ident == f'{robot_id}.gripper' or ident.startswith(f'{robot_id}.gripper.')]
+            stale_grippers = [path for path in stale_grippers if path.is_dir()]
             with tempfile.TemporaryDirectory(dir=self.plugin_root, prefix=".configuration-") as temporary:
                 stage = Path(temporary)
                 archives = []
@@ -936,8 +939,8 @@ class ConfigurationManager:
                     existed.append(destination.exists())
                     if destination.exists():
                         shutil.copytree(destination, stage / f"backup-{i}")
-                if remove_stale_gripper:
-                    shutil.copytree(stale_gripper, stage / "backup-stale-gripper")
+                for i, path in enumerate(stale_grippers):
+                    shutil.copytree(path, stage / f"backup-stale-{i}")
                 try:
                     for archive in archives:
                         # The complete staged robot tree was already cross-validated above.
@@ -946,8 +949,8 @@ class ConfigurationManager:
                         deploy_archive(
                             archive, self.plugin_root, check_dependents=False
                         )
-                    if remove_stale_gripper:
-                        shutil.rmtree(stale_gripper)
+                    for path in stale_grippers:
+                        shutil.rmtree(path)
                     resolve_robot_deployment(self.plugin_root, robot_id)
                     identity = configuration_identity(self.plugin_root, robot_id)
                     atomic_json(self.plugin_root / ".configuration-revisions" / f"{robot_id}.json", {**identity, "revision": revision})
@@ -957,8 +960,9 @@ class ConfigurationManager:
                             shutil.rmtree(destination)
                         if existed[i]:
                             shutil.copytree(stage / f"backup-{i}", destination)
-                    if remove_stale_gripper and not stale_gripper.exists():
-                        shutil.copytree(stage / "backup-stale-gripper", stale_gripper)
+                    for i, path in enumerate(stale_grippers):
+                        if not path.exists():
+                            shutil.copytree(stage / f"backup-stale-{i}", path)
                     raise
         return {"ok": True, "deployed": configuration_identity(self.plugin_root, robot_id), "restart_required": True}
 
@@ -975,6 +979,9 @@ class ConfigurationManager:
                 components = [("driver", driver), ("model", model)]
                 if gripper is not None:
                     components.append(("gripper", gripper))
+                references = _yaml(composition / 'manifest.yaml')['plugins'].get('gripper_drivers', {})
+                components.extend((f'gripper-{ident}', version / 'root/gripper_drivers' / plugin_id)
+                                  for ident, plugin_id in references.items())
                 components.append(("composition", composition))
                 for name, path in components:
                     packed = pack_directory(path, temporary / f"{name}.zip")
@@ -1011,6 +1018,7 @@ class ConfigurationManager:
             filenames = ["driver", "model"]
             if (folder / "input/gripper.zip").is_file():
                 filenames.append("gripper")
+            filenames.extend(path.stem for path in sorted((folder / 'input').glob('gripper-*.zip')))
             filenames.append("composition")
             for filename in filenames:
                 deploy_archive(folder / "input" / f"{filename}.zip", root)

@@ -96,6 +96,70 @@ humanoid_gripper_runtime:
 或 `Float64MultiArray` 话题转换到平台接口。CAN、串口、SDK、Action 或灵巧手可在
 `humanoid_gripper` 包中继续添加新的插件类，无需修改机械臂驱动。
 
+## 插件自身的启动依赖
+
+`hardware_driver` 和 `gripper_driver` 的 `manifest.yaml` 均可声明可选的 `startup` 列表。
+所选插件决定需要启动什么；通用 launch 不识别机器人型号、夹爪型号或具体控制器名称。
+省略该字段或使用 `startup: []` 时行为与旧插件一致，适合插件内直接连接 SDK、CAN 或串口的设备。
+
+例如，某夹爪通过 ros2_control 控制，可在其清单中声明：
+
+```yaml
+startup:
+  - kind: node
+    package: humanoid_manager
+    executable: ensure_controllers.py
+    arguments:
+      - tool_controller
+      - --controller-manager
+      - /my_robot/controller_manager
+      - --timeout
+      - '60'
+    wait_for_exit: true
+```
+
+`ensure_controllers.py` 是通用的 ros2_control 初始化工具：等待服务，只加载缺失的控制器，
+配置 `unconfigured` 控制器，激活 `inactive` 控制器，并确认最终状态。
+已经 `active` 的控制器直接复用，不会因重启 HC 重复配置失败，也不停止其他控制器。
+控制器类型、关节和接口仍须由底层 controller_manager 的 YAML 提供。
+只有使用该工具的插件才需要目标机安装 `controller_manager`；其他类型设备没有此依赖。
+此工具初始化后退出；已激活控制器的生命周期归底层 controller_manager 管理。
+
+其他厂商 ROS 驱动可声明常驻节点或 launch：
+
+```yaml
+startup:
+  - kind: launch
+    package: some_vendor_bringup
+    launch_file: device.launch.py
+    arguments:
+      port: /dev/ttyUSB0
+  - kind: node
+    package: some_vendor_driver
+    executable: wait_until_ready
+    arguments: ['--timeout', '30']
+    wait_for_exit: true
+```
+
+- `node` 在包的 `lib/<package>/` 中查找可执行文件，`arguments` 为字符串列表。
+  默认常驻；设置 `wait_for_exit: true` 表示初始化步骤，成功退出后才继续下一步。
+- `launch` 在包的 `share/<package>/launch/` 中查找文件，`arguments` 为非空字符串值的映射。
+  使用默认值的参数可省略，避免 ROS CLI 拒绝空的 `name:=`。
+  launch 作为被监管的子进程运行，接着执行下一步；需要等待设备就绪时由后续初始化步骤检查。
+- 所有步骤先校验依赖，再按机械臂驱动、夹爪驱动的顺序执行。全部初始化成功后才启动
+  HC 驱动运行时、运动服务等节点；初始化失败或常驻进程退出则结束本次机器人启动。
+- 初始化程序须设置自身的等待超时。Ctrl+C / 网页关闭机器人会关闭本次启动的子进程；
+  外部独立启动的厂商服务继续由原终端管理。底层初始化应支持重复执行。
+- 进程继承所属插件的 ament 和库路径；包可以随插件提供，也可预装在目标机。
+  导入 ZIP 时校验字段与字面参数，启动前检查包和程序是否存在，不执行 shell 字符串。
+- `start_driver:=false` / `start_gripper:=false` 同时跳过对应插件的启动步骤。
+  保存、复制、导出配置会保留清单；切换或移除夹爪插件会使用新插件的清单。
+
+不要把同一个厂商服务同时配置在 `startup` 和外部 `vendor_*` 启动项中。
+`startup` 随驱动插件发布；修改设备的命名空间等启动参数时，更新插件配置并重新打包导入。
+在网页中选择更新后的源插件、保存并重启，已有运行配置不会因导入 ZIP 自动变化。
+旧版管理器不认识该字段，导入新插件前需先更新管理器。
+
 ## robot_model 插件
 
 模型插件不含可执行代码，也不选择硬件驱动：
@@ -209,3 +273,8 @@ python3 src/humanoid_gripper/tools/create_deployment_bundle.py \
 
 导入 OpenArmX 手臂驱动、模型和夹爪三个产物后，直接在机器人页面新建配置。目标机不安装
 `openarmx_driver`、`openarmx_description` 或 `humanoid_gripper` 源码包。
+
+## 多设备实例与厂商接口
+
+组合现已支持多个独立夹爪插件实例、可编辑的启动步骤和共享实例变量。
+参数规则及开合测试能力由插件声明。详见 [设备插件、虚接口与实例](device_instances.md)。

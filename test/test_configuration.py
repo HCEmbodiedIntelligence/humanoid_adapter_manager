@@ -339,13 +339,19 @@ def test_robot_camera_configuration_is_versioned_deployed_and_exported(manager, 
         {'id': 'left', 'device_type': 'd405', 'serial_no': '405002'},
         {'id': 'right', 'device_type': 'd435', 'serial_no': '435001',
          'pointcloud': True, 'color_auto_exposure': False},
+        {'id': 'rear', 'device_type': 'd455', 'serial_no': '00455001',
+         'rgb_topic': '/rear/rgb', 'depth_topic': '/rear/depth',
+         'rgbd_topic': '/rear/rgbd', 'metadata_topic': '/rear/metadata'},
     ]
     robot = manager.draft('lab', doc, robot['etag'])
     robot = manager.validate('lab', robot['etag'], save=True)
     manager.apply('lab', robot['latest'], robot['etag'])
     deployed = manager.plugin_root / 'robots/lab/cameras.yaml'
     camera_config = __import__('yaml').safe_load(deployed.read_text())
-    assert [camera['device_type'] for camera in camera_config['cameras']] == ['d405', 'd405', 'd435']
+    assert [camera['device_type'] for camera in camera_config['cameras']] == ['d405', 'd405', 'd435', 'd455']
+    assert camera_config['cameras'][3]['serial_no'] == '00455001'
+    assert camera_config['cameras'][3]['rgb_topic'] == '/rear/rgb'
+    assert camera_config['cameras'][3]['rgbd_topic'] == '/rear/rgbd'
     assert camera_config['cameras'][2]['color_exposure_us'] == 4500
     assert all(camera['sync_rgb_depth'] for camera in camera_config['cameras'])
     assert all(camera['timestamp_alignment'] for camera in camera_config['cameras'])

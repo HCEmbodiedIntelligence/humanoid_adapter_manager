@@ -13,6 +13,7 @@ from ..configuration import resolve_gripper_test, resolve_initial_pose, resolve_
 from ..deployment import DeploymentError
 from .gripper_command import GripperCommandError, execute_gripper_test
 from .motion_command import MotionCommandError, execute_joint_jog, execute_move_j_pose
+from .camera_snapshot import CameraSnapshotError, capture_camera_snapshot, resolve_camera_snapshot
 
 
 class AdapterClient:
@@ -56,6 +57,7 @@ def register_adapter_routes(app, store, runtime):
     runtime.adapter_client = client
     operation_lock = asyncio.Lock()
     motion_lock = asyncio.Lock()
+    photo_slots = asyncio.Semaphore(2)
 
     def require_stopped():
         if getattr(runtime, 'launcher', None) and runtime.launcher.busy:
@@ -70,7 +72,7 @@ def register_adapter_routes(app, store, runtime):
         if status.get("state") != "running" or status.get("graph_age", 100) > 5:
             raise web.HTTPConflict(text="尚未取得新鲜 ROS 节点状态，无法确认机器人已停止；可先保存配置")
         names = {item["name"] for item in status.get("discovered_nodes", [])}
-        if names & {"humanoid_driver_runtime", "humanoid_gripper_runtime", "humanoid_motion_control", "humanoid_configuration_status", "hc_teleop_recv", "timestamp_adapter"}:
+        if any(name.startswith("humanoid_gripper_runtime_") or name.endswith("_timestamp_adapter") for name in names) or names & {"humanoid_driver_runtime", "humanoid_gripper_runtime", "humanoid_motion_control", "humanoid_configuration_status", "hc_teleop_recv", "timestamp_adapter"}:
             raise web.HTTPConflict(text="机器人节点仍在运行，请停止对应机器人的启动进程后再应用配置")
 
     async def catalog(_request):
@@ -227,9 +229,9 @@ def register_adapter_routes(app, store, runtime):
             raise web.HTTPBadRequest(text="夹爪测试参数无效")
         async with motion_lock:
             detail = await client.call("get", robot_id=robot_id)
-            require_running_robot(detail, robot_id, {"humanoid_gripper_runtime"})
             try:
                 command = resolve_gripper_test(detail["saved"], gripper_name, body["target"])
+                require_running_robot(detail, robot_id, {command["runtime_node"]})
                 result = await asyncio.to_thread(
                     execute_gripper_test, command, runtime.config["ros"]["domain_id"]
                 )
@@ -238,6 +240,28 @@ def register_adapter_routes(app, store, runtime):
             except GripperCommandError as error:
                 raise web.HTTPConflict(text=str(error)) from error
             return web.json_response({"ok": True, "target": body["target"], **result})
+
+    async def camera_snapshot(request):
+        if not runtime.config['ros']['enabled']:
+            raise web.HTTPServiceUnavailable(text='ROS 连接未启用，无法拍照')
+        if photo_slots.locked():
+            raise web.HTTPTooManyRequests(text='正在拍照，请稍后重试')
+        async with photo_slots:
+            robot_id = request.match_info['robot_id']
+            detail = await client.call('get', robot_id=robot_id)
+            if request.query.get('revision') != detail.get('latest'):
+                raise web.HTTPConflict(text='相机配置版本已变化，请重新加载已保存配置')
+            try:
+                camera = resolve_camera_snapshot(detail['saved'], request.match_info['camera_id'])
+                result = await asyncio.to_thread(capture_camera_snapshot, camera,
+                                                runtime.config['ros']['domain_id'])
+            except DeploymentError as error:
+                raise web.HTTPBadRequest(text=str(error)) from error
+            except CameraSnapshotError as error:
+                raise web.HTTPConflict(text=str(error)) from error
+            return web.json_response({'ok': True, 'robot_id': robot_id,
+                                      'revision': detail['latest'], **result},
+                                     headers={'Cache-Control': 'no-store'})
 
     async def jog_joint(request):
         robot_id = request.match_info["robot_id"]
@@ -270,6 +294,7 @@ def register_adapter_routes(app, store, runtime):
     app.router.add_post(
         "/api/adapters/robots/{robot_id}/grippers/{gripper_name}/test", test_gripper
     )
+    app.router.add_get('/api/adapters/robots/{robot_id}/cameras/{camera_id}/snapshot', camera_snapshot)
     app.router.add_post(
         "/api/adapters/robots/{robot_id}/joints/{joint_name}/jog", jog_joint
     )

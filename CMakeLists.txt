@@ -11,6 +11,7 @@ install(PROGRAMS
   scripts/humanoid_pluginctl.py
   scripts/configurator_launcher.py
   scripts/configuration_status.py
+  scripts/ensure_controllers.py
   scripts/benchmark_alignment.py
   scripts/validate_session_export.py
   DESTINATION lib/${PROJECT_NAME})
