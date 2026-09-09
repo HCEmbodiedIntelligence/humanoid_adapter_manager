@@ -70,6 +70,30 @@ def resolved_document(document, manifest):
     return expand(document, manifest.get('instance_parameters', {}))
 
 
+def _parameter_schema_validator(schema):
+    import jsonschema
+
+    # Preserve the original 2020-12 contract for schemas without a declaration.
+    # Explicit draft-07 schemas also work with Ubuntu 22.04's jsonschema 3.2.
+    dialect = 'https://json-schema.org/draft/2020-12/schema'
+    if isinstance(schema, dict):
+        dialect = schema.get('$schema', dialect)
+    supported = {
+        'http://json-schema.org/draft-07/schema': ('Draft7Validator', '3'),
+        'https://json-schema.org/draft-07/schema': ('Draft7Validator', '3'),
+        'https://json-schema.org/draft/2020-12/schema': ('Draft202012Validator', '4'),
+    }
+    if not isinstance(dialect, str) or dialect.rstrip('#') not in supported:
+        raise DeploymentError('unsupported plugin parameter schema dialect; use draft-07 or 2020-12')
+    name, minimum = supported[dialect.rstrip('#')]
+    validator = getattr(jsonschema, name, None)
+    if validator is None:
+        raise DeploymentError(
+            f'plugin parameter schema {dialect} requires jsonschema>={minimum} in the Python environment '
+            'used for packaging and runtime; draft-07 is supported by Ubuntu 22.04 system Python')
+    return validator
+
+
 def validate_parameter_schema(manifest, parameters):
     schema = resolved_document(manifest.get('parameter_schema'), manifest)
     if schema is None:
@@ -84,9 +108,10 @@ def validate_parameter_schema(manifest, parameters):
             for item in value:
                 local_references(item)
     local_references(schema)
-    from jsonschema import Draft202012Validator, SchemaError, ValidationError
+    from jsonschema import SchemaError, ValidationError
+    validator = _parameter_schema_validator(schema)
     try:
-        Draft202012Validator.check_schema(schema)
+        validator.check_schema(schema)
         converted = dict(parameters)
         properties = schema.get('properties', {}) if isinstance(schema, dict) else {}
         for name, value in parameters.items():
@@ -100,6 +125,6 @@ def validate_parameter_schema(manifest, parameters):
                 pass  # The schema reports the type mismatch with the parameter name.
             if isinstance(converted[name], float) and not math.isfinite(converted[name]):
                 raise DeploymentError(f'plugin parameter {name} must be finite')
-        Draft202012Validator(schema).validate(converted)
+        validator(schema).validate(converted)
     except (SchemaError, ValidationError) as error:
         raise DeploymentError(f'plugin parameter schema: {error.message}') from error

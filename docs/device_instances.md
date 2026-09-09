@@ -80,7 +80,13 @@ capabilities:
 
 ## 参数规则和能力
 
-插件可在清单中提供 `parameter_schema`（JSON Schema 2020-12，引用限清单内）。
+插件可在清单中提供 `parameter_schema`，引用限清单内。
+使用 `$schema: "http://json-schema.org/draft-07/schema#"` 明确声明 Draft 7，
+可兼容 Ubuntu 22.04 系统自带的 jsonschema 3.2；当前夹爪打包器使用此版本。
+也可声明 `$schema: "https://json-schema.org/draft/2020-12/schema"` 使用 2020-12，
+此时打包和运行时所使用的 Python 环境都需要 jsonschema >= 4。
+未声明 `$schema` 时保留原有 2020-12 语义；不支持的声明或缺少对应校验器会报错，不会静默降级或跳过校验。
+`setup_web.sh` 安装的是网页虚拟环境依赖，不会升级 `/usr/bin/python3` 的系统依赖。
 管理器校验插件参数，不再识别厂商类名或维护厂商私有字段白名单。
 `plugin_parameters` 仍为 `key=value` 列表；schema 的直接属性声明为 number、integer 或 boolean 时，
 管理器按该类型解释值后校验。旧插件可不提供 schema，由其运行时实现继续负责私有参数校验。
