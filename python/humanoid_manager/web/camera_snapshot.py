@@ -52,20 +52,24 @@ def encode_snapshot(message):
             'stamp_ns': message.header.stamp.sec * 1_000_000_000 + message.header.stamp.nanosec}
 
 
-def capture_camera_snapshot(camera, domain_id, timeout_sec=5.0):
+def capture_camera_snapshot(camera, domain_id, timeout_sec=10.0):
     try:
         import rclpy
         from rclpy.context import Context
         from rclpy.executors import SingleThreadedExecutor
         from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+        from rclpy.qos_event import SubscriptionEventCallbacks, UnsupportedEventTypeError
         if camera['message_type'] == 'image':
             from sensor_msgs.msg import Image as Message
+            message_type = 'sensor_msgs/msg/Image'
         else:
             from realsense2_camera_msgs.msg import RGBD as Message
+            message_type = 'realsense2_camera_msgs/msg/RGBD'
     except ImportError as error:
         raise CameraSnapshotError('当前环境缺少相机 ROS 消息支持') from error
     context, node, executor = Context(), None, None
     received, rejected = [], []
+    lost_messages = 0
     try:
         rclpy.init(args=[], context=context, domain_id=int(domain_id))
         node = rclpy.create_node('humanoid_camera_snapshot_' + uuid.uuid4().hex[:10], context=context)
@@ -81,15 +85,54 @@ def capture_camera_snapshot(camera, domain_id, timeout_sec=5.0):
                 return
             received[:] = [frame]
 
-        qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT,
-                         durability=DurabilityPolicy.VOLATILE)
-        node.create_subscription(Message, camera['topic'], receive, qos)
+        def message_lost(event):
+            nonlocal lost_messages
+            lost_messages += max(0, event.total_count_change)
+
+        subscription, reliability = None, None
+        endpoints, publishers = [], []
+        next_discovery = 0.
         deadline = time.monotonic() + timeout_sec
         while not received and time.monotonic() < deadline:
+            now = time.monotonic()
+            if now >= next_discovery:
+                endpoints = node.get_publishers_info_by_topic(camera['topic'])
+                publishers = [info for info in endpoints if info.topic_type == message_type]
+                # A reliable writer also matches best-effort readers, but those
+                # readers cannot recover a lost fragment of a large image. Use
+                # retransmission when offered; preserve sensor-data compatibility.
+                selected = (ReliabilityPolicy.RELIABLE if publishers and all(
+                    info.qos_profile.reliability == ReliabilityPolicy.RELIABLE for info in publishers)
+                    else ReliabilityPolicy.BEST_EFFORT)
+                if subscription is None or selected != reliability:
+                    if subscription is not None:
+                        node.destroy_subscription(subscription)
+                    qos = QoSProfile(depth=1, reliability=selected, durability=DurabilityPolicy.VOLATILE)
+                    try:
+                        subscription = node.create_subscription(Message, camera['topic'], receive, qos,
+                            event_callbacks=SubscriptionEventCallbacks(message_lost=message_lost))
+                    except UnsupportedEventTypeError:
+                        subscription = node.create_subscription(Message, camera['topic'], receive, qos)
+                    reliability = selected
+                next_discovery = now + .25
             executor.spin_once(timeout_sec=min(.1, max(0., deadline - time.monotonic())))
         if not received:
-            reason = rejected[-1] if rejected else '未收到图像，请启动对应相机并检查序列号、话题和 ROS domain_id'
-            raise CameraSnapshotError(f"{camera['camera_id']}: {reason}（{camera['topic']}）")
+            if rejected:
+                reason = '已收到图像，但' + rejected[-1]
+            elif lost_messages:
+                reason = (f'未收到完整图像，ROS 报告丢失 {lost_messages} 条消息；'
+                          '请检查 DDS 传输、缓冲区以及图像分辨率和帧率')
+            elif publishers:
+                reason = (f'已发现 {len(publishers)} 个图像发布端，但 {timeout_sec:g} 秒内未收到图像；'
+                          '请检查相机驱动是否持续出帧及 DDS 传输')
+            elif endpoints:
+                types = ', '.join(sorted({info.topic_type for info in endpoints}))
+                reason = f'话题消息类型为 {types}，拍照需要 {message_type}，请检查配置的话题'
+            else:
+                reason = '未发现图像发布端，请启动对应相机并检查话题及 ROS domain_id'
+            qos_name = reliability.name if reliability is not None else '尚未订阅'
+            raise CameraSnapshotError(f"{camera['camera_id']}: {reason}"
+                                      f"（{camera['topic']}；domain_id={domain_id}；QoS={qos_name}）")
         return {**camera, **encode_snapshot(received[0]), 'received_at': time.time()}
     finally:
         if executor is not None:
