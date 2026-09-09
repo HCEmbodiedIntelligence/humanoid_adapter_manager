@@ -166,6 +166,22 @@ class WebRobotWorkflowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status, 200, await response.text())
         robot = await self.post('/api/adapters/robots', {'robot_id': 'managed_mock', 'name': '运行控制测试',
             'driver_id': 'fake_driver', 'model_id': 'test_model'}, expected=201)
+        # Browser JSON turns integral floats into integers, including driver
+        # scales/offsets and rates. Save that exact shape before the real launch.
+        def browser_numbers(value):
+            if isinstance(value, float) and value.is_integer():
+                return int(value)
+            if isinstance(value, list):
+                return [browser_numbers(item) for item in value]
+            if isinstance(value, dict):
+                return {key: browser_numbers(item) for key, item in value.items()}
+            return value
+        document = browser_numbers(robot['draft'])
+        motion = document['resources']['motion_params']['humanoid_motion_control']['ros__parameters']
+        for key, limits in motion.items():
+            if key.startswith('group_upper_limits.'):
+                motion[key] = [0 if value == .1 else value for value in limits]
+        robot = await self.post('/api/adapters/robots/managed_mock/save', {'document': document, 'etag': robot['etag']})
         await self.post('/api/launcher/start', {'robot_id': robot['robot_id'], 'revision': robot['latest'],
             'start_teleop': True, 'start_cameras': False})
         process = self.runtime.launcher.processes[0][1]

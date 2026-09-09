@@ -259,6 +259,7 @@ def test_managed_launch_uses_only_enabled_plugin_steps(monkeypatch, tmp_path, dr
         driver_startup=(node_step('arm_vendor'),), gripper_startup=(node_step('tool_vendor'),),
         environment=lambda: {'DEVICE': 'arm'}, gripper_environment=lambda: {'DEVICE': 'tool'},
         resource_environment=lambda: {})
+    _write_yaml(deployment.resources['motion_params'], {'humanoid_motion_control': {'ros__parameters': {}}})
     monkeypatch.setattr(module, 'resolve_robot_deployment', lambda *args: deployment)
     monkeypatch.setattr(module, 'acquire_robot_run_lock', lambda *args: None)
     monkeypatch.setattr(module, 'acquire_deployment_lock', lambda *args, **kwargs: None)

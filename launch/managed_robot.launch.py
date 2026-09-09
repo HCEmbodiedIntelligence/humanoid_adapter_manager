@@ -3,7 +3,9 @@
 
 from pathlib import Path
 import json
+import math
 from typing import List
+import yaml
 from ament_index_python.packages import get_package_share_directory
 from humanoid_manager.runtime_state import acquire_deployment_lock, acquire_robot_run_lock, configuration_identity
 from humanoid_manager.startup import bringup_command, default_plan
@@ -22,21 +24,64 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 from humanoid_manager.deployment import (
     DEFAULT_PLUGIN_ROOT,
+    DeploymentError,
     resolve_robot_deployment,
 )
 
 
+# These are the double declarations of the managed driver, gripper and motion
+# runtimes. JSON numbers from the editor do not preserve 1.0 versus 1.
+_DOUBLE_PARAMETERS = {
+    'control_frequency_hz', 'diagnostic_frequency_hz', 'command_watchdog_ms',
+    'input_stamp_max_age_s', 'input_stamp_future_tolerance_s', 'default_move_timeout_s',
+    'move_j_position_tolerance_rad', 'stopped_velocity_tolerance_rad_s',
+    'cartesian_position_tolerance_m', 'cartesian_orientation_tolerance_rad', 'stable_duration_s',
+    'joint_max_velocity_rad_s', 'joint_max_acceleration_rad_s2', 'joint_max_jerk_rad_s3',
+    'cartesian_max_linear_velocity_m_s', 'cartesian_max_linear_acceleration_m_s2',
+    'cartesian_max_linear_jerk_m_s3', 'cartesian_max_angular_velocity_rad_s',
+    'cartesian_max_angular_acceleration_rad_s2', 'cartesian_max_angular_jerk_rad_s3',
+}
+_DOUBLE_ARRAY_PARAMETERS = {
+    'vendor_to_logical_scales', 'vendor_to_logical_offsets_rad', 'vendor_to_logical_offsets',
+}
+
+
+def _double(value, key):
+    if type(value) not in (int, float):
+        raise DeploymentError(f'{key} 必须是有限数值')
+    try:
+        number = float(value)
+    except OverflowError as error:
+        raise DeploymentError(f'{key} 必须是有限数值') from error
+    if not math.isfinite(number):
+        raise DeploymentError(f'{key} 必须是有限数值')
+    return number
+
+
 def _typed_parameters(parameters):
-    """Keep resolved YAML types, including empty arrays and numeric-looking names."""
+    """Restore declared runtime types without changing saved, checksummed files."""
     result = {}
     for key, value in parameters.items():
-        if isinstance(value, str):
+        if key in _DOUBLE_PARAMETERS:
+            result[key] = ParameterValue(_double(value, key), value_type=float)
+        elif key in _DOUBLE_ARRAY_PARAMETERS or key.startswith(('group_lower_limits.', 'group_upper_limits.')):
+            if not isinstance(value, list):
+                raise DeploymentError(f'{key} 必须是有限数值数组')
+            result[key] = ParameterValue([_double(item, key) for item in value], value_type=List[float])
+        elif isinstance(value, str):
             result[key] = ParameterValue(value, value_type=str)
         elif isinstance(value, list) and all(isinstance(item, str) for item in value):
             result[key] = ParameterValue(value, value_type=List[str])
         else:
             result[key] = value
     return result
+
+
+def _motion_parameters(path):
+    # The ROS YAML parser rejects mixed integer/double arrays before overrides
+    # can apply. Read with Python and normalize before generating launch YAML.
+    document = yaml.safe_load(Path(path).read_text(encoding='utf-8'))
+    return _typed_parameters(document['humanoid_motion_control']['ros__parameters'])
 
 
 def _launch_registered_robot(context):
@@ -87,7 +132,7 @@ def _launch_registered_robot(context):
             name="humanoid_motion_control",
             output="screen",
             parameters=[
-                str(resources["motion_params"]),
+                _motion_parameters(resources["motion_params"]),
                 {
                     "channel_config_file": str(resources["channel_config"]),
                     "sdk_config_file": str(resources["sdk_config"]),
