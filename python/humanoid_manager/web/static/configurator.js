@@ -349,12 +349,14 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
       const field=el('fieldset'),heading=el('div',undefined,'row-heading');heading.append(el('h4',camera.id||`相机 ${index+1}`),button('移除相机',()=>{cameras.splice(index,1);markDirty();renderForm();}));field.append(heading);
       const grid=el('div',undefined,'parameter-grid');field.append(grid);
       const controls={};
+      let updateColorFields=()=>{};
       const add=(key,options=null)=>{
         const control=scalar(key,camera[key],value=>{
           const old=camera.id;
           camera[key]=key==='id'?value.trim():value;
           if(key==='id'&&camera.namespace===old){camera.namespace=camera.id;if(controls.namespace)controls.namespace.value=camera.namespace;}
-          if(key==='backend'||key==='device_type')renderForm();
+          if(key==='backend')renderForm();
+          if(key==='device_type'||key==='color_auto_exposure')updateColorFields();
         },{options});
         controls[key]=control.querySelector('input,select');grid.append(control);
       };
@@ -364,8 +366,22 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
       if(camera.backend==='realsense'){
         add('namespace');add('camera_name');add('width');add('height');add('color_format');add('depth_format');add('align_depth');
         add('depth_auto_exposure');if(camera.depth_auto_exposure){add('depth_auto_exposure_limit_us');add('depth_auto_gain_limit');}else{add('depth_exposure_us');add('depth_gain');}
-        if(String(camera.device_type).toLowerCase()==='d405')field.append(el('p','D405 的 RGB 与深度共享 depth_module；上面的曝光和增益补偿设置同时作用于两路。','form-help'));
-        else{add('color_auto_exposure');if(camera.color_auto_exposure)field.append(el('p','当前官方配置未给 RGB 自动曝光设置 5 ms 上限；需要严格上限时使用不超过 5000 μs 的手动曝光。','notice error'));else{add('color_exposure_us');add('color_gain');}}
+        add('color_auto_exposure');add('color_exposure_us');add('color_gain');
+        const sharedExposureHint=el('p','D405 的 RGB 与深度共享 depth_module；上面的曝光和增益补偿设置同时作用于两路。','form-help');
+        const autoExposureWarning=el('p','当前官方配置未给 RGB 自动曝光设置 5 ms 上限；需要严格上限时使用不超过 5000 μs 的手动曝光。','notice error');
+        field.append(sharedExposureHint,autoExposureWarning);
+        // Keep the model input mounted so typing retains focus, caret and scroll.
+        updateColorFields=()=>{
+          const shared=String(camera.device_type).toLowerCase()==='d405';
+          for(const key of ['color_auto_exposure','color_exposure_us','color_gain']){
+            const hidden=shared||(key!=='color_auto_exposure'&&camera.color_auto_exposure);
+            controls[key].parentElement.classList.toggle('hidden',hidden);
+            controls[key].disabled=hidden;
+          }
+          sharedExposureHint.classList.toggle('hidden',!shared);
+          autoExposureWarning.classList.toggle('hidden',shared||!camera.color_auto_exposure);
+        };
+        updateColorFields();
         const details=el('details'),summary=el('summary','高级官方驱动参数'),area=el('textarea');area.rows=5;area.value=JSON.stringify(camera.parameters||{},null,2);area.onchange=()=>{try{camera.parameters=JSON.parse(area.value);area.setCustomValidity('');markDirty();}catch(_){area.setCustomValidity('请输入 JSON 对象');area.reportValidity();}};details.append(summary,area);field.append(details);
       }
       const outputTopics=el('fieldset');outputTopics.append(el('legend','采集输出话题'));field.append(outputTopics);

@@ -120,6 +120,34 @@ assert.equal(new URL(base).hostname, '127.0.0.1', 'Only a temporary loopback tes
     assert.equal(await page.locator('[data-camera-test]').count(),5);
     await page.locator('#robotForm > fieldset').last().getByRole('button',{name:'移除相机',exact:true}).click();
     assert.equal(await page.locator('[data-camera-test]').count(),4);
+    // Editing a lower camera must retain focus, cursor and scroll on every key.
+    const editingCamera=page.locator('#robotForm > fieldset').nth(1);
+    const cameraDetails=editingCamera.locator('details').first();
+    await cameraDetails.locator('summary').click();
+    const modelInput=editingCamera.getByLabel('相机型号',{exact:true});
+    await modelInput.evaluate(node=>node.scrollIntoView({block:'center'}));
+    await modelInput.click();
+    await modelInput.press('ControlOrMeta+A');
+    const inputHandle=await modelInput.elementHandle();
+    const scrollBefore=await page.evaluate(()=>window.scrollY);
+    assert.ok(scrollBefore>500,'Exercise editing while scrolled down the camera list');
+    for(const key of 'd455'){
+      await page.keyboard.type(key);
+      assert.equal(await inputHandle.evaluate(node=>node.isConnected&&document.activeElement===node),true,'Model input must keep focus while typing');
+      assert.ok(Math.abs(await page.evaluate(()=>window.scrollY)-scrollBefore)<2,'Typing a camera model must preserve scroll position');
+    }
+    assert.equal(await modelInput.inputValue(),'d455');
+    assert.equal(await cameraDetails.evaluate(node=>node.open),true);
+    assert.equal(await editingCamera.getByLabel('RGB 手动曝光（μs）',{exact:true}).isVisible(),true);
+    // Replace the middle digit, keeping the native caret and D405 field behavior.
+    await modelInput.press('ArrowLeft');
+    await modelInput.press('Backspace');
+    await page.keyboard.type('0');
+    assert.equal(await modelInput.inputValue(),'d405');
+    assert.equal(await modelInput.evaluate(node=>node.selectionStart),3);
+    assert.equal(await editingCamera.getByLabel('RGB 手动曝光（μs）',{exact:true}).isVisible(),false);
+    assert.ok(Math.abs(await page.evaluate(()=>window.scrollY)-scrollBefore)<2);
+    assert.equal(await editingCamera.getByLabel('设备序列号',{exact:true}).inputValue(),'00000000001');
     const invalidCamera=page.locator('#robotForm > fieldset').last().getByLabel('标识',{exact:true});
     await invalidCamera.fill('rear\u200b');
     const invalidSave=page.waitForResponse(r=>r.request().method()==='POST'&&r.url().endsWith('/save'));
