@@ -83,12 +83,14 @@ class RosSources:
             from sensor_msgs.msg import JointState, Image, CameraInfo, PointCloud2
             from realsense2_camera_msgs.msg import RGBD, Metadata
             from .ros_images import HeaderPairs
+            from humanoid_camera.transport import CaptureSubscription
             context=Context()
             rclpy.init(args=[],context=context,domain_id=self.config['domain_id'])
             node=rclpy.create_node('humanoid_normalized_sources',context=context)
             executor=SingleThreadedExecutor(context=context)
             executor.add_node(node)
             seq={};pending=OrderedDict();pending_bytes=0
+            capture_subscriptions=[]
             budget=self.hub.cfg['buffers'].get('ros_assembly_bytes',64*1024*1024)
             def report(ident,data=None):
                 self.hub.reports[ident]={**(data or {}),'ready':True,'capture_clock_id':'ros',
@@ -159,8 +161,8 @@ class RosSources:
                 elif transport in {'ros_rgbd','ros_pointcloud'}:
                     if not source.get('metadata_topic'):
                         raise ValueError(ident+': metadata_topic is required for source lineage')
-                    node.create_subscription(Metadata,source['metadata_topic'],lambda msg,ident=ident,source=source:combine(ident,source,'metadata',msg),qos_profile_sensor_data)
-                    node.create_subscription(RGBD if transport=='ros_rgbd' else PointCloud2,source['topic'],lambda msg,ident=ident,source=source:combine(ident,source,'message',msg),qos_profile_sensor_data)
+                    capture_subscriptions.append(CaptureSubscription(node,Metadata,source['metadata_topic'],lambda msg,ident=ident,source=source:combine(ident,source,'metadata',msg),depth=30))
+                    capture_subscriptions.append(CaptureSubscription(node,RGBD if transport=='ros_rgbd' else PointCloud2,source['topic'],lambda msg,ident=ident,source=source:combine(ident,source,'message',msg),depth=2 if transport=='ros_pointcloud' else 10))
                 elif transport=='ros_images':
                     pairs=HeaderPairs(byte_limit=budget//raw_count//2)
                     for name in ('rgb','depth'):
@@ -175,11 +177,16 @@ class RosSources:
                                         d=pairs.document(ident,source,pair)
                                         session.submit(d,decode_image(pair['streams']['rgb'][0]),decode_image(pair['streams']['depth'][0]))
                             except (ValueError,KeyError,TypeError) as error:rejected(ident,error)
-                        node.create_subscription(Image,source[name+'_topic'],image,qos_profile_sensor_data)
+                        capture_subscriptions.append(CaptureSubscription(node,Image,source[name+'_topic'],image))
                         if source.get(name+'_info_topic'):
                             node.create_subscription(CameraInfo,source[name+'_info_topic'],lambda msg,pairs=pairs,name=name:pairs.info(name,msg),qos_profile_sensor_data)
+            next_transport_refresh=time.monotonic()
             while not self.stop_event.is_set():
                 executor.spin_once(timeout_sec=.02)
+                now=time.monotonic()
+                if now>=next_transport_refresh:
+                    for subscription in capture_subscriptions:subscription.refresh()
+                    next_transport_refresh=now+1.
         except Exception as error:
             self.error=str(error)
             session=self.active_session()

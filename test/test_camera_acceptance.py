@@ -145,7 +145,10 @@ def test_command_receiver_keeps_two_cameras_and_parameter_services_separate(monk
             return Obj(done=lambda: True, result=lambda: Obj(values=values))
     class Node:
         def create_client(self, kind, topic): return Client()
-        def create_subscription(self, kind, topic, callback, qos): subscriptions[topic] = callback
+        def create_subscription(self, kind, topic, callback, qos):
+            subscriptions[topic] = callback
+            return Obj(topic_name=topic)
+        def get_publishers_info_by_topic(self, topic): return []
         def get_clock(self): return Obj(now=lambda: Obj(nanoseconds=base + state['index'] * 33_333_333 + 5_000_000))
         def destroy_node(self): state['destroyed'] = True
     def spin_once(node, timeout_sec):
