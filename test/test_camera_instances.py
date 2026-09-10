@@ -75,9 +75,13 @@ def test_launch_binds_each_serial_and_remaps_driver_and_adapter_consistently(tmp
     config.write_text(yaml.safe_dump({'schema_version': 1, 'cameras': values}))
     context = LaunchContext(); context.launch_configurations['camera_config'] = str(config)
     actions = module._launch(context)
-    assert len(actions) == 8
+    assert len(actions) == 10
+    drivers = [action for action in actions if action['package'] == 'realsense2_camera']
+    adapters = [action for action in actions if action['executable'] == 'timestamp_adapter.py']
+    gain_nodes = [action for action in actions if action['executable'] == 'gain_controller.py']
+    assert len(gain_nodes) == 2
     node_names = set()
-    for camera, driver, adapter in zip(values, actions[::2], actions[1::2]):
+    for camera, driver, adapter in zip(values, drivers, adapters):
         params = evaluate_parameters(context, normalize_parameters(driver['parameters']))[0]
         assert params['serial_no'] == camera['serial_no']  # Includes leading zeroes; must stay a string.
         assert params['device_type'] == camera['device_type']

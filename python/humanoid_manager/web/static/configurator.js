@@ -38,6 +38,7 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
     max_actual_exposure_us:'曝光要求上限（μs）',rgbd_max_midpoint_skew_ms:'RGB-D 曝光中点差上限（ms）',camera_max_error_ms:'图像到数据网格偏差上限（ms）',
     depth_auto_exposure:'深度 / 共享成像模块自动曝光',depth_exposure_us:'深度手动曝光（μs）',depth_gain:'深度手动增益 / 亮度补偿',depth_auto_exposure_limit_us:'深度自动曝光上限（μs）',depth_auto_gain_limit:'深度自动增益 / 亮度补偿上限',
     color_auto_exposure:'RGB 自动曝光',color_exposure_us:'RGB 手动曝光（μs）',color_gain:'RGB 手动增益 / 亮度补偿',rgb_topic:'彩色图像话题',depth_topic:'深度图像话题',rgbd_topic:'标准化 RGB-D 话题',metadata_topic:'来源元数据话题',pointcloud_topic:'标准化点云话题',pointcloud_metadata_topic:'点云元数据话题',
+    depth_auto_gain:'程序自动调节深度增益（红外亮度）',color_auto_gain:'程序自动调节 RGB 增益（灰度亮度）',color_auto_gain_limit:'RGB 程序自动增益上限',
     velocity_scale:'回位速度比例',acceleration_scale:'回位加速度比例',jerk_scale:'回位加加速度比例',timeout_sec:'回位超时（秒）',positions_rad:'目标位置（rad）',
   };
   const enums = {message_type:['twist','twist_stamped'],command_type:['joint_state','float64','gripper_action'],feedback_type:['joint_state','float64'],position_unit:['m','rad'],input_axis:['trigger','grip'],enable_button:['primary_axis_click','grip_button','trigger_button','primary','secondary','menu','secondary_axis_click'],forward_axis:['primary_y','primary_x','secondary_y','secondary_x','none'],lateral_axis:['none','primary_x','primary_y','secondary_x','secondary_y'],turn_axis:['primary_x','primary_y','secondary_x','secondary_y','none'],kind:['move_j','move_l','move_p','servo_j','servo_p'],controller:['left','right','head'],clutch_controller:['left','right'],mode:['udp','vrdata']};
@@ -304,7 +305,8 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
   }
 
   function cameraTemplate(id,device='d405'){
-    return {id,enabled:true,backend:'realsense',device_type:device,serial_no:'',namespace:id,camera_name:'camera',width:640,height:480,fps:30,color_format:'RGB8',depth_format:'Z16',pointcloud:false,align_depth:false,sync_rgb_depth:true,timestamp_alignment:true,max_actual_exposure_us:5000,rgbd_max_midpoint_skew_ms:1,camera_max_error_ms:1,required:true,depth_auto_exposure:true,depth_exposure_us:4500,depth_gain:64,depth_auto_exposure_limit_us:4500,depth_auto_gain_limit:64,color_auto_exposure:false,color_exposure_us:4500,color_gain:64,parameters:{}};
+    const manual=['d435','d435i','d435f','d435if'].includes(String(device).toLowerCase());
+    return {id,enabled:true,backend:'realsense',device_type:device,serial_no:'',namespace:id,camera_name:'camera',width:640,height:480,fps:30,color_format:'RGB8',depth_format:'Z16',pointcloud:false,align_depth:false,sync_rgb_depth:true,timestamp_alignment:true,max_actual_exposure_us:5000,rgbd_max_midpoint_skew_ms:1,camera_max_error_ms:1,required:true,depth_auto_exposure:!manual,depth_exposure_us:manual?3900:4500,depth_gain:64,depth_auto_exposure_limit_us:4500,depth_auto_gain_limit:manual?128:64,color_auto_exposure:false,color_exposure_us:manual?3900:4500,color_gain:64,depth_auto_gain:manual,color_auto_gain:manual,color_auto_gain_limit:128,parameters:{}};
   }
   function nextCameraId(prefix='camera'){let n=1;const cameras=selected.draft.cameras||(selected.draft.cameras=[]);while(cameras.some(c=>c.id===prefix+n))n++;return prefix+n;}
   function cameraTest(field,camera){
@@ -356,7 +358,7 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
           camera[key]=key==='id'?value.trim():value;
           if(key==='id'&&camera.namespace===old){camera.namespace=camera.id;if(controls.namespace)controls.namespace.value=camera.namespace;}
           if(key==='backend')renderForm();
-          if(key==='device_type'||key==='color_auto_exposure')updateColorFields();
+          if(['device_type','color_auto_exposure','depth_auto_exposure','depth_auto_gain','color_auto_gain'].includes(key))updateColorFields(key==='device_type');
         },{options});
         controls[key]=control.querySelector('input,select');grid.append(control);
       };
@@ -365,17 +367,34 @@ robot_id:'机器人 ID',buttons_topic:'按钮事件话题',adapter:'管理器关
       add('enabled');add('backend',['realsense','ros_topics']);add('device_type');add('serial_no');add('required');add('pointcloud');add('fps');add('sync_rgb_depth');add('timestamp_alignment');add('max_actual_exposure_us');add('rgbd_max_midpoint_skew_ms');add('camera_max_error_ms');
       if(camera.backend==='realsense'){
         add('namespace');add('camera_name');add('width');add('height');add('color_format');add('depth_format');add('align_depth');
-        add('depth_auto_exposure');if(camera.depth_auto_exposure){add('depth_auto_exposure_limit_us');add('depth_auto_gain_limit');}else{add('depth_exposure_us');add('depth_gain');}
+        for(const key of ['depth_auto_exposure','depth_auto_exposure_limit_us','depth_auto_gain_limit','depth_exposure_us','depth_gain'])add(key);
         add('color_auto_exposure');add('color_exposure_us');add('color_gain');
+        const initiallyManual=['d435','d435i','d435f','d435if'].includes(String(camera.device_type).toLowerCase());
+        camera.depth_auto_gain??=initiallyManual;camera.color_auto_gain??=initiallyManual;camera.color_auto_gain_limit??=128;
+        add('depth_auto_gain');add('color_auto_gain');add('color_auto_gain_limit');
         const sharedExposureHint=el('p','D405 的 RGB 与深度共享 depth_module；上面的曝光和增益补偿设置同时作用于两路。','form-help');
-        const manualExposureHint=el('p','D435 RGB 原生自动曝光不支持设置曝光上限，因此使用手动曝光和增益。曝光不超过 5000 μs，按 100 μs 步长向下取整；亮度不足时可手动提高 RGB 增益。这三项以上方设置为准，高级参数不覆盖它们。深度自动曝光独立设置。','form-help');
+        const manualExposureHint=el('p','D435 深度与 RGB 均关闭原生自动曝光，起始曝光各为 3900 μs（RGB 驱动值 39），两路使用上方同一帧率。程序自动增益分别读取红外亮度和 RGB 灰度亮度，只调节后续采集的相机增益；关闭对应开关可使用手动增益。曝光中点差仍需用逐帧元数据验收。','form-help');
         const autoExposureWarning=el('p','当前官方配置未给 RGB 自动曝光设置 5 ms 上限；需要严格上限时使用不超过 5000 μs 的手动曝光。','notice error');
         field.append(sharedExposureHint,manualExposureHint,autoExposureWarning);
         // Keep the model input mounted so typing retains focus, caret and scroll.
-        updateColorFields=()=>{
+        updateColorFields=(modelChanged=false)=>{
           const model=String(camera.device_type).toLowerCase(),shared=model==='d405';
           const manualOnly=['d435','d435i','d435f','d435if'].includes(model);
-          if(manualOnly){camera.color_auto_exposure=false;controls.color_auto_exposure.checked=false;}
+          if(manualOnly){
+            if(modelChanged||camera.depth_auto_exposure){camera.depth_exposure_us=camera.color_exposure_us=3900;controls.depth_exposure_us.value=controls.color_exposure_us.value=3900;}
+            if(modelChanged){camera.depth_auto_gain=camera.color_auto_gain=true;controls.depth_auto_gain.checked=controls.color_auto_gain.checked=true;camera.depth_auto_gain_limit=128;controls.depth_auto_gain_limit.value=128;}
+            camera.depth_auto_exposure=camera.color_auto_exposure=false;
+            controls.depth_auto_exposure.checked=controls.color_auto_exposure.checked=false;
+            camera.sync_rgb_depth=true;controls.sync_rgb_depth.checked=true;
+          }else{camera.depth_auto_gain=camera.color_auto_gain=false;controls.depth_auto_gain.checked=controls.color_auto_gain.checked=false;}
+          controls.depth_auto_exposure.disabled=manualOnly;controls.sync_rgb_depth.disabled=manualOnly;
+          for(const key of ['depth_auto_exposure_limit_us','depth_auto_gain_limit','depth_exposure_us','depth_gain','depth_auto_gain','color_auto_gain','color_auto_gain_limit']){
+            const hidden=key==='depth_auto_exposure_limit_us'?!camera.depth_auto_exposure:
+              key==='depth_auto_gain_limit'?!(camera.depth_auto_exposure||camera.depth_auto_gain):
+              key==='depth_exposure_us'||key==='depth_gain'?camera.depth_auto_exposure:
+              key==='color_auto_gain_limit'?!manualOnly||!camera.color_auto_gain:!manualOnly;
+            controls[key].parentElement.classList.toggle('hidden',hidden);controls[key].disabled=hidden;
+          }
           for(const key of ['color_auto_exposure','color_exposure_us','color_gain']){
             const hidden=shared||(key!=='color_auto_exposure'&&camera.color_auto_exposure);
             controls[key].parentElement.classList.toggle('hidden',hidden);

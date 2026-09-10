@@ -352,7 +352,7 @@ def test_robot_camera_configuration_is_versioned_deployed_and_exported(manager, 
     assert camera_config['cameras'][3]['serial_no'] == '00455001'
     assert camera_config['cameras'][3]['rgb_topic'] == '/rear/rgb'
     assert camera_config['cameras'][3]['rgbd_topic'] == '/rear/rgbd'
-    assert camera_config['cameras'][2]['color_exposure_us'] == 4500
+    assert camera_config['cameras'][2]['color_exposure_us'] == 3900
     assert all(camera['sync_rgb_depth'] for camera in camera_config['cameras'])
     assert all(camera['timestamp_alignment'] for camera in camera_config['cameras'])
     assert all(camera['max_actual_exposure_us'] == 5000 for camera in camera_config['cameras'])

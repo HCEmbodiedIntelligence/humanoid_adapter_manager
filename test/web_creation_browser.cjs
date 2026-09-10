@@ -155,7 +155,10 @@ assert.equal(new URL(base).hostname, '127.0.0.1', 'Only a temporary loopback tes
     assert.equal(await headCamera.getByLabel('RGB 自动曝光',{exact:true}).isChecked(),false);
     assert.equal(await headCamera.getByLabel('RGB 自动曝光',{exact:true}).isDisabled(),true);
     assert.equal(await headCamera.getByLabel('RGB 手动曝光（μs）',{exact:true}).isVisible(),true);
-    assert.equal(await headCamera.getByLabel('RGB 手动曝光（μs）',{exact:true}).inputValue(),'4500');
+    assert.equal(await headCamera.getByLabel('RGB 手动曝光（μs）',{exact:true}).inputValue(),'3900');
+    assert.equal(await headCamera.getByLabel('深度 / 共享成像模块自动曝光',{exact:true}).isChecked(),false);
+    assert.equal(await headCamera.getByLabel('深度 / 共享成像模块自动曝光',{exact:true}).isDisabled(),true);
+    assert.equal(await headCamera.getByLabel('深度手动曝光（μs）',{exact:true}).inputValue(),'3900');
     const invalidCamera=page.locator('#robotForm > fieldset').last().getByLabel('标识',{exact:true});
     await invalidCamera.fill('rear\u200b');
     const invalidSave=page.waitForResponse(r=>r.request().method()==='POST'&&r.url().endsWith('/save'));
@@ -175,6 +178,11 @@ assert.equal(new URL(base).hostname, '127.0.0.1', 'Only a temporary loopback tes
     assert.equal(cameraDocument.cameras[3].serial_no,'00000000003');
     assert.equal(cameraDocument.cameras[3].device_type,'d435');
     assert.equal(cameraDocument.cameras[3].color_auto_exposure,false);
+    assert.equal(cameraDocument.cameras[3].depth_auto_exposure,false);
+    assert.equal(cameraDocument.cameras[3].depth_exposure_us,3900);
+    assert.equal(cameraDocument.cameras[3].color_exposure_us,3900);
+    assert.equal(cameraDocument.cameras[3].depth_auto_gain,true);
+    assert.equal(cameraDocument.cameras[3].color_auto_gain,true);
     assert.equal(cameraDocument.cameras[3].rgb_topic,'/rear/rgb');
     const testPhoto=await page.evaluate(()=>{
       const canvas=document.createElement('canvas');canvas.width=2;canvas.height=2;
