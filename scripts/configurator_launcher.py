@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """Start the standalone humanoid configuration and data manager."""
 import argparse
 import asyncio
@@ -28,7 +28,7 @@ def main():
     parser.add_argument('--start-teleop',choices=('true','false'))
     parser.add_argument('--start-cameras',choices=('true','false'))
     parser.add_argument('--offline',action=argparse.BooleanOptionalAction,default=None,help='Edit and validate without ROS')
-    args=parser.parse_args()
+    args, _ = parser.parse_known_args()
     try:
         from aiohttp import web
         import mcap

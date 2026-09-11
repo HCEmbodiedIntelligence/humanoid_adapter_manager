@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 CONFIGURATOR_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+export PATH="/home/maple/.nvm/versions/node/v20.20.2/bin:/usr/bin:${PATH}"
 if [[ -f /opt/ros/humble/setup.bash ]]; then
   set +u
   source /opt/ros/humble/setup.bash
