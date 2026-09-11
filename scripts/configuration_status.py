@@ -12,7 +12,10 @@ def main():
     rclpy.init()
     node = Node("humanoid_configuration_status")
     identity = json.loads(node.declare_parameter("identity", "{}").value)
-    expected = node.declare_parameter("expected_nodes", ["humanoid_driver_runtime", "humanoid_motion_control"]).value
+    # ROS 2 may deserialize an explicitly empty YAML sequence as None on
+    # Humble. Treat both representations as the intended empty node list so
+    # camera-only and other no-hardware launches keep publishing status.
+    expected = node.declare_parameter("expected_nodes", ["humanoid_driver_runtime", "humanoid_motion_control"]).value or []
     publisher = node.create_publisher(String, "/humanoid/configuration_state", 10)
     started = time.time()
 

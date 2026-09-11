@@ -215,9 +215,18 @@ def _launch_registered_robot(context):
                           for instance in deployment.gripper_instances)
     expected = [name for argument, name in expected_pairs
         if LaunchConfiguration(argument).perform(context).lower() in {"1", "true", "yes", "on"}]
+    # An empty list needs an explicit ROS string-array type.  Without it ROS 2
+    # launch normalizes [] to an untyped tuple before configuration_status.py
+    # can declare the parameter.  Camera-only/no-hardware launches therefore
+    # failed before any camera process could start.
+    status_parameters = {"identity": json.dumps(identity)}
+    if expected:
+        status_parameters["expected_nodes"] = expected
+    else:
+        status_parameters["expected_nodes"] = ParameterValue([], value_type=List[str])
     actions.append(Node(package="humanoid_manager", executable="configuration_status.py",
         name="humanoid_configuration_status", output="screen",
-        parameters=[{"identity": json.dumps(identity), "expected_nodes": expected}]))
+        parameters=[status_parameters]))
     steps = []
     for enabled, entries, environment in (
         (start_driver, deployment.driver_startup, driver_environment),
