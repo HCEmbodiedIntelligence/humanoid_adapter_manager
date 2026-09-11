@@ -50,7 +50,17 @@ def decode(schema, channel, message):
         from rclpy.serialization import deserialize_message
         from rosidl_runtime_py.utilities import get_message
         from rosidl_runtime_py.convert import message_to_ordereddict
-        return message_to_ordereddict(deserialize_message(message.data, get_message(schema.name)))
+        decoded = deserialize_message(message.data, get_message(schema.name))
+        if schema.name in {'sensor_msgs/msg/Image', 'sensor_msgs/msg/CompressedImage'}:
+            # uint8 image payloads cannot contain non-finite numbers. Avoid turning
+            # millions of bytes into Python objects just to audit/preview metadata.
+            # The complete CDR buffer has already been decoded and stays in MCAP.
+            size = len(decoded.data)
+            decoded.data = b''
+            payload = message_to_ordereddict(decoded)
+            payload['data'] = {'binary_bytes': size}
+            return payload
+        return message_to_ordereddict(decoded)
     raise ValueError(f'尚不能预览 {channel.message_encoding} / {schema.name if schema else "无类型"}；原始消息仍可裁剪导出')
 
 

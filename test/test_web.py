@@ -25,7 +25,9 @@ class ConfiguratorTests(unittest.IsolatedAsyncioTestCase):
         self.store = ConfigStore(self.root / 'manager.yaml')
         self.store.save({'adapter_manager': {'cli': str(Path(__file__).resolve().parents[1]/'scripts/humanoid_pluginctl.py'),
             'plugin_root': str(self.root/'plugins'), 'state_root': str(self.root/'configuration')},
-            'ros': {'enabled':False, 'recording': {'directory':str(self.root/'recordings')}}})
+            'ros': {'enabled':False, 'recording': {'directory':str(self.root/'recordings')},
+                    'subscriptions': [{'topic': '/hc_teleop/joint_states',
+                                       'type': 'sensor_msgs/msg/JointState', 'outputs': ['record']}]}})
         self.app = create_app(self.store)
         self.client = TestClient(TestServer(self.app))
         await self.client.start_server()

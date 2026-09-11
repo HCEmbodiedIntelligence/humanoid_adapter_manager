@@ -97,7 +97,7 @@ def validate_config(config):
         item['enabled']=True
         if 'websocket' not in item['outputs']:
             item['outputs'].append('websocket')
-        if topic == quality['button_topic']:
+        if topic == quality['button_topic'] and quality['button_enabled']:
             if 'record' not in item['outputs']:
                 item['outputs'].append('record')
             item['max_hz']=0

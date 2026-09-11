@@ -113,6 +113,11 @@ ros2 run humanoid_manager humanoid_pluginctl.py --root "$HOME/.local/share/human
 
 ## 验证
 
+机器人本体不可用、需要真实控制话题与真实相机录制时，使用
+[无执行层的真实相机录制](docs/mock_robot_recording.md)。
+`mock_robot_feedback.py` 接收平台臂/夹爪控制命令，延迟一帧发布原平台反馈话题；
+录制和回放仍使用本管理器现有功能，第一阶段无需 VR。
+
 ```bash
 source /opt/ros/humble/setup.bash
 source install/setup.bash

@@ -70,10 +70,10 @@ class PlatformRuntime:
                 pass
         if self.player:
             await asyncio.to_thread(self.player.stop)
-        if self.recorder:
-            await asyncio.to_thread(self.recorder.stop)
         if self.recording_ros:
             await asyncio.to_thread(self.recording_ros.stop)
+        if self.recorder:
+            await asyncio.to_thread(self.recorder.stop)
         if self.ros:
             await asyncio.to_thread(self.ros.stop)
 
