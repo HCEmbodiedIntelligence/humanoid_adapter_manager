@@ -14,6 +14,7 @@ install(PROGRAMS
   scripts/ensure_controllers.py
   scripts/benchmark_alignment.py
   scripts/validate_session_export.py
+  scripts/simulate_recording.py
   scripts/mock_robot_feedback.py
   DESTINATION lib/${PROJECT_NAME})
 

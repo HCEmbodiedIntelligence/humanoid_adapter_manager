@@ -118,6 +118,13 @@ ros2 run humanoid_manager humanoid_pluginctl.py --root "$HOME/.local/share/human
 `mock_robot_feedback.py` 接收平台臂/夹爪控制命令，延迟一帧发布原平台反馈话题；
 录制和回放仍使用本管理器现有功能，第一阶段无需 VR。
 
+真实相机配合模拟关节、夹爪和按钮数据录制时，按
+[真实相机与模拟机器人数据录制](docs/simulated_recording.md) 分别启动相机、网页和发布脚本。
+仅模拟数据测试 ROS 原始录制，可运行
+`python3 src/humanoid_manager/scripts/simulate_recording.py --web --domain-id 0`。
+脚本发布模拟关节、夹爪和按钮话题，并在 7877 端口启动预选好录制话题的独立网页。
+操作和中断测试见 [模拟录制说明](docs/simulated_recording.md)。
+
 ```bash
 source /opt/ros/humble/setup.bash
 source install/setup.bash
