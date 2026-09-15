@@ -282,6 +282,23 @@ def test_gripper_test_uses_managed_topics_and_configured_open_close_positions(ma
     assert opened['diagnostics_topic'] == '/tools/diagnostics'
     assert opened['position'] == 0.04 and closed['position'] == 0.002
     assert opened['max_effort'] == 12.0
+    assert opened['position_tolerance'] == .001
+    assert closed['position_tolerance'] == pytest.approx(.038 * .05)
+
+    parameters = document['resources']['gripper_params']['humanoid_gripper_runtime']['ros__parameters']
+    parameters['position_units'][parameters['gripper_names'].index('left_gripper')] = 'rad'
+    assert resolve_gripper_test(document, 'left_gripper', 'close')['position_tolerance'] == .001
+    parameters['position_units'][parameters['gripper_names'].index('left_gripper')] = 'm'
+    document['plugin_settings']['gripper'] = {'capabilities': {'grippers': {'left_gripper': {
+        'position_tolerance': .0008, 'closed_position_tolerance': .003}}}}
+    assert resolve_gripper_test(document, 'left_gripper', 'open')['position_tolerance'] == .0008
+    assert resolve_gripper_test(document, 'left_gripper', 'close')['position_tolerance'] == .003
+    document['plugin_settings']['gripper']['capabilities']['grippers']['left_gripper']['closed_position_tolerance'] = .04
+    with pytest.raises(DeploymentError, match='到位容差'):
+        resolve_gripper_test(document, 'left_gripper', 'close')
+    document['plugin_settings']['gripper'] = {}
+    document['resources']['hc_teleop_config']['grippers'][0].update(open_position=.001, closed_position=0.)
+    assert resolve_gripper_test(document, 'left_gripper', 'close')['position_tolerance'] == pytest.approx(.00005)
 
 
 def test_attach_configure_export_and_remove_gripper_from_existing_robot(manager, tmp_path):

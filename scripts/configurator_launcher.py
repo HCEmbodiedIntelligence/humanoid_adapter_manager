@@ -23,12 +23,20 @@ def main():
     parser.add_argument('--port',type=int)
     parser.add_argument('--domain-id',type=int)
     parser.add_argument('--run-robot',action='store_true',help='同时启动网页中明确选定的机器人；未选择时只启动网页')
+    parser.add_argument('--parent-pid',type=int,help=argparse.SUPPRESS)
     parser.add_argument('--bringup-json',default='{"package":"","launch_file":"","arguments":{}}',help='由整机 launch 提供的底层启动项')
     parser.add_argument('--robot-id')
     parser.add_argument('--start-teleop',choices=('true','false'))
     parser.add_argument('--start-cameras',choices=('true','false'))
     parser.add_argument('--offline',action=argparse.BooleanOptionalAction,default=None,help='Edit and validate without ROS')
     args, _ = parser.parse_known_args()
+    if args.parent_pid is not None:
+        from humanoid_manager.runtime_state import bind_to_parent
+        from humanoid_manager.deployment import DeploymentError
+        try:
+            bind_to_parent(args.parent_pid)
+        except DeploymentError as error:
+            parser.error(str(error))
     try:
         from aiohttp import web
         import mcap
@@ -105,7 +113,13 @@ def main():
             for sig in (signal.SIGINT,signal.SIGTERM):
                 loop.remove_signal_handler(sig)
 
-    asyncio.run(serve())
+    from humanoid_manager.runtime_state import acquire_manager_run_lock
+    from humanoid_manager.deployment import DeploymentError
+    try:
+        with acquire_manager_run_lock(config['adapter_manager']['plugin_root']):
+            asyncio.run(serve())
+    except DeploymentError as error:
+        parser.error(str(error))
 
 
 if __name__=='__main__':

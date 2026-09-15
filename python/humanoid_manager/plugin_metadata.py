@@ -36,12 +36,16 @@ def validate_settings(settings):
     for name, targets in grippers.items():
         if not isinstance(name, str) or not isinstance(targets, dict):
             raise DeploymentError('gripper capabilities require named target mappings')
-        for key in ('open_position', 'closed_position', 'max_effort'):
+        tolerance_keys = ('position_tolerance', 'open_position_tolerance', 'closed_position_tolerance')
+        for key in ('open_position', 'closed_position', 'max_effort', *tolerance_keys):
             if key in targets and (isinstance(targets[key], bool) or not isinstance(targets[key], (int, float))
                                    or not math.isfinite(targets[key])):
                 raise DeploymentError(f'{name}.{key} must be finite')
         if targets.get('max_effort', 0) < 0:
             raise DeploymentError(f'{name}.max_effort must be nonnegative')
+        for key in tolerance_keys:
+            if key in targets and targets[key] <= 0:
+                raise DeploymentError(f'{name}.{key} must be positive')
     return result
 
 

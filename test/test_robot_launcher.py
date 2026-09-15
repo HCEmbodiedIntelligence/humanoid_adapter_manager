@@ -3,8 +3,10 @@ import asyncio
 import copy
 import json
 import importlib.util
+import os
 from pathlib import Path
 import sys
+import signal
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -17,7 +19,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from humanoid_manager.configuration import ConfigurationConflict
 from humanoid_manager.deployment import DeploymentError
-from humanoid_manager.runtime_state import acquire_robot_run_lock
+from humanoid_manager.runtime_state import acquire_manager_run_lock, acquire_robot_run_lock
 from humanoid_manager.startup import StartupPlans, default_plan, validate_plan
 from humanoid_manager.web.robot_launcher import RobotLauncher, _group_running, register_launcher_routes
 
@@ -60,6 +62,24 @@ def test_exclusive_robot_run_lease(tmp_path):
     finally:
         lease.close()
     acquire_robot_run_lock(tmp_path).close()
+
+
+def test_second_manager_for_same_plugins_is_rejected_before_web_start(tmp_path, monkeypatch):
+    pytest.importorskip('mcap')
+    path = Path(__file__).resolve().parents[1] / 'scripts/configurator_launcher.py'
+    spec = importlib.util.spec_from_file_location('duplicate_configurator_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(sys, 'argv', [str(path), '--run-robot', '--offline',
+        '--state-root', str(tmp_path / 'other_state'), '--plugin-root', str(tmp_path / 'plugins'),
+        '--port', '17876'])
+    begin = Mock()
+    monkeypatch.setattr(RobotLauncher, 'start', begin)
+    with acquire_manager_run_lock(tmp_path / 'plugins'):
+        with pytest.raises(SystemExit) as caught:
+            module.main()
+    assert caught.value.code == 2
+    begin.assert_not_called()
 
 
 @pytest.mark.parametrize('padding', [0, 16000, 79000, 80000, 200000])
@@ -122,6 +142,7 @@ class RobotLauncherTests(unittest.IsolatedAsyncioTestCase):
         real_spawn = asyncio.create_subprocess_exec
         async def spawn(*command, **kwargs):
             self.command = command
+            self.child_environment = kwargs.get('env', {})
             return await real_spawn(sys.executable, '-c', 'import time; time.sleep(120)', **kwargs)
         self.spawn_patch = patch('humanoid_manager.web.robot_launcher.asyncio.create_subprocess_exec', side_effect=spawn)
         self.spawn = self.spawn_patch.start()
@@ -150,6 +171,8 @@ class RobotLauncherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state['runtime']['phase'], 'running')
         process = self.launcher.processes[0][1]
         self.assertIn('start_teleop:=true', self.command)
+        self.assertEqual(self.child_environment['HUMANOID_MANAGER_PID'], str(os.getpid()))
+        self.assertEqual(self.child_environment['ROS_DOMAIN_ID'], '230')
         await self.post('start', {'robot_id': 'mock_arm'}, expected=409)
         self.assertEqual(self.spawn.call_count, 1)
         self.robot['latest'] = 'rev2'

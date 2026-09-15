@@ -361,6 +361,18 @@ def resolve_gripper_test(document, gripper_name, target):
     effort = float(effort)
     if not math.isfinite(position) or not math.isfinite(effort) or effort < 0.0:
         raise DeploymentError(f"{gripper_name}: 测试位置或力度超出插件限制")
+    unit = parameters['position_units'][parameters['gripper_names'].index(gripper_name)]
+    limits = mapping if mapping is not None else targets
+    stroke = abs(float(limits['open_position']) - float(limits['closed_position']))
+    default_tolerance = 0.002 if target == 'close' and unit == 'm' else 0.001
+    if stroke > 0:
+        default_tolerance = min(default_tolerance, stroke * 0.05)
+    tolerance_key = 'closed_position_tolerance' if target == 'close' else 'open_position_tolerance'
+    tolerance = targets.get(tolerance_key, targets.get('position_tolerance', default_tolerance))
+    if (isinstance(tolerance, bool) or not isinstance(tolerance, (int, float))
+            or not math.isfinite(tolerance) or tolerance <= 0
+            or (stroke > 0 and tolerance >= stroke / 2)):
+        raise DeploymentError(f'{gripper_name}: 到位容差必须为正数且小于开合行程的一半')
     return {
         "command_topic": parameters["platform_gripper_command_topic"],
         "state_topic": parameters["platform_gripper_state_topic"],
@@ -369,6 +381,7 @@ def resolve_gripper_test(document, gripper_name, target):
         "position": position,
         "max_effort": effort,
         "timeout_sec": timeout,
+        "position_tolerance": float(tolerance),
         "runtime_node": next(('humanoid_gripper_runtime' if item['instance_id'] == 'default' else
                               'humanoid_gripper_runtime_' + item['instance_id']
                               for item in document['gripper_instances']

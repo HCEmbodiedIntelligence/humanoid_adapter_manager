@@ -124,7 +124,8 @@ class RobotLauncher:
                 logs.mkdir(parents=True, exist_ok=True)
                 fd, self.log_path = tempfile.mkstemp(prefix=f'{self.robot_id}-', suffix='.log', dir=logs)
                 self.log_stream = os.fdopen(fd, 'ab', buffering=0)
-                env = {**os.environ, 'ROS_DOMAIN_ID': str(self.runtime.config['ros']['domain_id'])}
+                env = {**os.environ, 'ROS_DOMAIN_ID': str(self.runtime.config['ros']['domain_id']),
+                       'HUMANOID_MANAGER_PID': str(os.getpid())}
                 # A single launch owns vendor and platform processes. Its run
                 # lock is acquired before the vendor's hardware launch starts.
                 for label, argv in [('机器人', command)]:

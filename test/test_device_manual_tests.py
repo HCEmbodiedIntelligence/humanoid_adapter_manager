@@ -29,7 +29,7 @@ def ros(monkeypatch):
                             endpoints=[SimpleNamespace(topic_type='sensor_msgs/msg/Image',
                                 qos_profile=QoSProfile(depth=10))], lost_messages=0,
                             event_callbacks=None, events_supported=True, subscription_attempts=0,
-                            discovery_queries=0, discover_after=0)
+                            discovery_queries=0, discover_after=0, on_spin=None)
     class Publisher:
         def get_subscription_count(self): return 1
         def publish(self, message): state.messages.append(message)
@@ -64,6 +64,8 @@ def ros(monkeypatch):
         def remove_node(self, node): pass
         def shutdown(self): state.executor_shutdown = True
         def spin_once(self, **kwargs):
+            if state.on_spin:
+                state.on_spin(kwargs.get('timeout_sec', .05))
             if state.diagnostic_callback and state.diagnostics:
                 state.diagnostic_callback(state.diagnostics())
             if state.lost_messages and state.event_callbacks:
@@ -80,6 +82,15 @@ def ros(monkeypatch):
     return state
 
 
+@pytest.fixture
+def gripper_clock(ros, monkeypatch):
+    from humanoid_manager.web import gripper_command
+    clock = SimpleNamespace(now=0.)
+    ros.on_spin = lambda seconds: setattr(clock, 'now', clock.now + seconds)
+    monkeypatch.setattr(gripper_command, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    return clock
+
+
 def gripper_diagnostics(runtime='humanoid_gripper_runtime_vendor_b', **values):
     fields = {'connected': 'true', 'active': 'true', 'communication_ok': 'true',
               'driver_fault_latched': 'false', **values}
@@ -88,8 +99,8 @@ def gripper_diagnostics(runtime='humanoid_gripper_runtime_vendor_b', **values):
 
 
 @pytest.mark.parametrize('position', [.07, .01])
-def test_open_and_close_accept_instance_routing_and_observe_measured_result(ros, position):
-    command = {'name': 'tool_b', 'position': position, 'max_effort': 5., 'timeout_sec': .2,
+def test_open_and_close_accept_instance_routing_and_observe_measured_result(ros, gripper_clock, position):
+    command = {'name': 'tool_b', 'position': position, 'max_effort': 5., 'timeout_sec': 1.,
                'command_topic': '/tools/command', 'state_topic': '/tools/state',
                'runtime_node': 'humanoid_gripper_runtime_vendor_b',
                'diagnostics_topic': '/tools/diagnostics'}
@@ -105,6 +116,93 @@ def test_open_and_close_accept_instance_routing_and_observe_measured_result(ros,
     assert list(ros.messages[-1].position) == [position]
     assert ros.destroyed
     assert ros.diagnostic_topic == '/tools/diagnostics'
+
+
+def close_command(tolerance=.002):
+    return {'name': 'tool_b', 'position': 0., 'max_effort': 5., 'timeout_sec': 2.,
+            'position_tolerance': tolerance, 'command_topic': '/tools/command',
+            'state_topic': '/tools/state', 'runtime_node': 'humanoid_gripper_runtime_vendor_b'}
+
+
+@pytest.mark.parametrize('initially_closed', [False, True])
+@pytest.mark.parametrize('measured', [.00160376, .00174882, .002])
+def test_closed_with_nonzero_feedback_arrives_without_forcing_zero(
+        ros, gripper_clock, initially_closed, measured):
+    ros.diagnostics = gripper_diagnostics
+    ros.feedback = lambda: JointState(name=['tool_b'],
+        position=[measured if initially_closed or ros.messages else .04])
+    result = execute_gripper_test(close_command(), 14)
+    assert result['final_position'] == measured
+    assert result['position_error'] <= result['position_tolerance'] == .002
+    assert result['duration_seconds'] <= .1
+    if initially_closed:
+        assert ros.messages == []
+    else:
+        assert ros.messages[0].position[0] == 0.
+        assert all(message.position[0] == measured for message in ros.messages[1:])
+
+
+@pytest.mark.parametrize('arrives_at', [1.95, 2.05])
+def test_in_tolerance_feedback_wins_over_timeout_at_deadline(ros, gripper_clock, arrives_at):
+    # Readiness finishes at 0.05 s, giving a movement deadline of 2.05 s.
+    ros.diagnostics = gripper_diagnostics
+    ros.feedback = lambda: JointState(name=['tool_b'],
+        position=[.00174882 if gripper_clock.now >= arrives_at else .003])
+    result = execute_gripper_test(close_command(), 14)
+    assert result['final_position'] == .00174882
+    assert arrives_at <= result['duration_seconds'] <= 2.05
+    assert all(message.position[0] == .00174882 for message in ros.messages[-3:])
+
+
+def test_arrival_does_not_require_an_extra_continuous_settling_period(ros, gripper_clock):
+    ros.diagnostics = gripper_diagnostics
+    ros.feedback = lambda: JointState(name=['tool_b'],
+        position=[.00174882 if len(ros.messages) % 2 else .0021])
+    result = execute_gripper_test(close_command(), 14)
+    assert result['final_position'] == .00174882
+    assert result['command_messages'] == 1
+    assert all(message.position[0] == .00174882 for message in ros.messages[1:])
+
+
+@pytest.mark.parametrize('measured', [.002001, .006])
+def test_outside_tolerance_still_times_out_and_holds(ros, gripper_clock, measured):
+    ros.diagnostics = gripper_diagnostics
+    ros.feedback = lambda: JointState(name=['tool_b'],
+        position=[measured])
+    with pytest.raises(GripperCommandError, match='未到达目标.*容差 0.002'):
+        execute_gripper_test(close_command(), 14)
+    assert ros.messages[-1].position[0] == measured
+    assert ros.destroyed and ros.executor_shutdown
+
+
+def test_feedback_loss_during_movement_still_fails_and_holds(ros, gripper_clock):
+    ros.diagnostics = gripper_diagnostics
+    samples = iter([.04, .006])
+    def feedback():
+        value = next(samples, None)
+        return JointState(name=['tool_b'], position=[value]) if value is not None else None
+    ros.feedback = feedback
+    with pytest.raises(GripperCommandError, match='位置反馈已过期'):
+        execute_gripper_test(close_command(), 14)
+    assert ros.messages[-1].position[0] == .006
+
+
+def test_stale_in_tolerance_feedback_during_readiness_cannot_pass(ros, gripper_clock):
+    ros.diagnostics = lambda: gripper_diagnostics(
+        'humanoid_gripper_runtime_vendor_b' if gripper_clock.now >= .65 else 'other_runtime')
+    samples = iter([JointState(name=['tool_b'], position=[.00174882])])
+    ros.feedback = lambda: next(samples, None)
+    with pytest.raises(GripperCommandError, match='位置反馈已过期'):
+        execute_gripper_test(close_command(), 14)
+    assert ros.messages == []
+    assert ros.destroyed and ros.executor_shutdown
+
+
+@pytest.mark.parametrize('tolerance', [0., -.001, float('nan'), float('inf'), True])
+def test_invalid_tolerance_never_sends_commands(ros, tolerance):
+    with pytest.raises(GripperCommandError, match='容差|有限数值'):
+        execute_gripper_test(close_command(tolerance), 14)
+    assert ros.messages == []
 
 
 @pytest.mark.parametrize('diagnostics,error', [

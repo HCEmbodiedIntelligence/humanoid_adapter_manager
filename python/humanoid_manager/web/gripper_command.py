@@ -14,7 +14,7 @@ def execute_gripper_test(command, domain_id):
     """Publish a bounded target while observing fresh measured gripper feedback."""
     required = {"command_topic", "state_topic", "name", "position", "max_effort", "timeout_sec"}
     if (not isinstance(command, dict) or not required <= command.keys()
-            or command.keys() - required - {'runtime_node', 'diagnostics_topic'}):
+            or command.keys() - required - {'runtime_node', 'diagnostics_topic', 'position_tolerance'}):
         raise GripperCommandError("夹爪测试命令不完整")
     if not all(isinstance(command[key], str) and command[key] for key in
                ("command_topic", "state_topic", "name")):
@@ -28,12 +28,15 @@ def execute_gripper_test(command, domain_id):
         position = float(command["position"])
         effort = float(command["max_effort"])
         timeout = float(command["timeout_sec"])
+        tolerance = float(command.get('position_tolerance', 0.001))
     except (TypeError, ValueError) as error:
         raise GripperCommandError("夹爪测试目标必须是有限数值") from error
-    if not all(math.isfinite(value) for value in (position, effort, timeout)):
+    if not all(math.isfinite(value) for value in (position, effort, timeout, tolerance)):
         raise GripperCommandError("夹爪测试目标必须是有限数值")
     if effort < 0.0 or not 0.1 <= timeout <= 15.0:
         raise GripperCommandError("夹爪测试力度或超时无效")
+    if isinstance(command.get('position_tolerance'), bool) or tolerance <= 0:
+        raise GripperCommandError('夹爪到位容差必须为正数')
 
     try:
         import rclpy
@@ -47,7 +50,7 @@ def execute_gripper_test(command, domain_id):
 
     context, node, executor = Context(), None, None
     publisher = subscription = diagnostic_subscription = None
-    feedback = {"position": None, "count": 0}
+    feedback = {"position": None, "count": 0, "received_at": 0.0}
     health = {"status": None, "received_at": 0.0}
     published = 0
     started = time.monotonic()
@@ -67,6 +70,7 @@ def execute_gripper_test(command, domain_id):
                 return
             feedback["position"] = float(message.position[index])
             feedback["count"] += 1
+            feedback['received_at'] = time.monotonic()
 
         def receive_diagnostics(message):
             for status in message.status:
@@ -113,16 +117,24 @@ def execute_gripper_test(command, domain_id):
             executor.spin_once(timeout_sec=min(0.05, remaining))
 
         initial = feedback["position"]
-        tolerance = 0.001
         deadline = time.monotonic() + timeout
-        while abs(feedback["position"] - position) > tolerance:
+        while True:
             error = diagnostic_error()
             if error is not None:
                 raise GripperCommandError(error)
-            if time.monotonic() >= deadline:
+            now = time.monotonic()
+            if now - feedback['received_at'] > 0.5:
+                raise GripperCommandError('夹爪位置反馈已过期，无法确认到位；已尝试请求保持实测位置')
+            # Arrival means a fresh measurement is within the configured band.
+            # Check the last received sample before the deadline: feedback at
+            # the deadline must not be reported as a timeout. The finalizer
+            # requests a measured-position hold if this test started movement.
+            if abs(feedback['position'] - position) <= tolerance:
+                break
+            if now >= deadline:
                 raise GripperCommandError(
                     f"夹爪在 {timeout:g} 秒内未到达目标"
-                    f"（目标 {position:g}，实测 {feedback['position']:g}）；"
+                    f"（目标 {position:g}，实测 {feedback['position']:g}，容差 {tolerance:g}）；"
                     "已尝试请求保持实测位置"
                 )
             message = JointState()
@@ -132,13 +144,15 @@ def execute_gripper_test(command, domain_id):
             message.effort = [effort]
             publisher.publish(message)
             published += 1
-            executor.spin_once(timeout_sec=0.05)
+            executor.spin_once(timeout_sec=min(0.05, deadline - now))
 
         return {
             "name": command["name"],
             "initial_position": initial,
             "target_position": position,
             "final_position": feedback["position"],
+            "position_tolerance": tolerance,
+            "position_error": abs(feedback['position'] - position),
             "feedback_messages": feedback["count"],
             "command_messages": published,
             "duration_seconds": round(time.monotonic() - started, 3),

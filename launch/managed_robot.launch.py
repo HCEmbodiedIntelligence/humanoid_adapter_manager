@@ -4,10 +4,11 @@
 from pathlib import Path
 import json
 import math
+import os
 from typing import List
 import yaml
 from ament_index_python.packages import get_package_share_directory
-from humanoid_manager.runtime_state import acquire_deployment_lock, acquire_robot_run_lock, configuration_identity
+from humanoid_manager.runtime_state import acquire_deployment_lock, acquire_robot_run_lock, bind_to_parent, configuration_identity
 from humanoid_manager.startup import bringup_command, default_plan, vendor_launch_actions
 from humanoid_manager.plugin_startup import startup_actions
 
@@ -84,6 +85,9 @@ def _motion_parameters(path):
 
 
 def _launch_registered_robot(context):
+    owner = os.environ.get('HUMANOID_MANAGER_PID')
+    if owner is not None:
+        bind_to_parent(int(owner))
     robot_id = LaunchConfiguration("robot_id").perform(context)
     if not robot_id:
         raise RuntimeError("robot_id is required")
