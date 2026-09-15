@@ -69,6 +69,25 @@ def bringup_command(plan):
         f'{key}:={value}' for key, value in bringup['arguments'].items()]]
 
 
+def vendor_launch_actions(command):
+    """Keep delayed vendor actions in their own supervised launch context."""
+    from launch.actions import ExecuteProcess, Shutdown
+    from launch.logging import get_logger
+
+    def exited(event, context):
+        if context.is_shutdown:
+            return []
+        reason = f'底层 launch 已退出，退出码 {event.returncode}'
+        get_logger('vendor_startup').error(reason)
+        return [Shutdown(reason=reason)]
+
+    # An included scoped group loses its launch configurations before process
+    # exit handlers run (e.g. delayed controller spawners). A child launch keeps
+    # those configurations alive without leaking them into the platform launch.
+    # No new session is created: the manager still owns the whole process group.
+    return [ExecuteProcess(cmd=command, output='screen', on_exit=exited)]
+
+
 class StartupPlans:
     def __init__(self, state_root):
         self.root = Path(state_root)

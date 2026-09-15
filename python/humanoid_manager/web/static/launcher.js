@@ -8,9 +8,9 @@
     const runtime=state?.runtime||{},robot=current(),busy=['waiting','starting','running','stopping'].includes(runtime.phase);
     if(robot&&robot.robot_id!==shownRobot){
       shownRobot=robot.robot_id;
-      const plan=state?.profiles[shownRobot];
-      $('#launcherTeleop').checked=plan?.start_teleop||false;
-      $('#launcherCameras').checked=plan?.start_cameras!==false;
+      const plan=state?.profiles[shownRobot],defaults=state?.defaults||{};
+      $('#launcherTeleop').checked=defaults.start_teleop??plan?.start_teleop??false;
+      $('#launcherCameras').checked=defaults.start_cameras??plan?.start_cameras??true;
     }
     const unsaved=window.Configurator?.hasUnsavedChanges();
     $('#startManagedRobot').disabled=pending||busy||!runtime.enabled||!robot||unsaved;
@@ -21,7 +21,7 @@
     if(runtime.enabled)setText('#robotApplyHint','保存配置只生成新版本；点击“重启机器人”后生效，网页不会重启。');
     setText('#launcherPhase',labels[runtime.phase]||'正在读取');
     setText('#launcherTarget',robot?`当前选择：${robot.name} · ${robot.robot_id}${busy?'　｜　运行中：'+runtime.robot_id:''}`:'请先在左侧选择或创建机器人配置。');
-    setText('#launcherHint',!runtime.enabled?'当前仅启动网页。请使用 ros2 launch robot_bringup registered_robot.launch.py，才能从这里控制机器人。':unsaved?'有未保存的配置，请先保存；保存不会自动重启或启动机器人。':'保存配置后，重启机器人生效。关闭、重启会处理受控的底层驱动，网页保持运行。');
+    setText('#launcherHint',!runtime.enabled?'当前仅启动网页。请使用 ros2 launch robot_bringup registered_robot.launch.py，才能从这里控制机器人。':unsaved?'有未保存的配置，请先保存；保存不会自动重启或启动机器人。':'点击“开启机器人”才按已保存配置启动真机；重新打开网页服务也不会自动启动。');
   }
   async function operation(fn){
     pending=true;update();message('');

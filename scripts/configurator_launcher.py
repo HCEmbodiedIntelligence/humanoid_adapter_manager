@@ -87,7 +87,9 @@ def main():
             ('robot_id',args.robot_id),
             ('start_teleop',args.start_teleop=='true' if args.start_teleop is not None else None),
             ('start_cameras',args.start_cameras=='true' if args.start_cameras is not None else None)) if value is not None}
-        app=create_app(store,run_robot=True,bringup=plan['bringup'],initial_robot=initial)
+        # An omitted vendor override must preserve the robot's saved startup.
+        bringup=plan['bringup'] if plan['bringup']['package'] else None
+        app=create_app(store,run_robot=True,bringup=bringup,initial_robot=initial)
         runner=web.AppRunner(app)
         stopped=asyncio.Event()
         loop=asyncio.get_running_loop()
@@ -96,9 +98,7 @@ def main():
         try:
             await runner.setup()
             await web.TCPSite(runner,config['server']['host'],config['server']['port']).start()
-            # Start hardware only after the HTTP port is successfully bound.
-            app['runtime'].launcher.begin_autostart()
-            print('统一启动已就绪。关闭浏览器不影响运行；Ctrl+C 停止本入口启动的整套服务。',flush=True)
+            print('网页已就绪。点击“开启机器人”才启动真机；Ctrl+C 停止本入口启动的整套服务。',flush=True)
             await stopped.wait()
         finally:
             await runner.cleanup()

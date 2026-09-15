@@ -44,7 +44,6 @@ class RobotLauncher:
         self.lock = asyncio.Lock()
         self.processes = []
         self.monitor = None
-        self.auto_task = None
         self.phase = 'stopped'
         self.robot_id = ''
         self.revision = ''
@@ -62,30 +61,8 @@ class RobotLauncher:
                 'owned_processes': len(self.processes)}
 
     def state(self):
-        return {**self.plans.read(), 'runtime': self.status()}
-
-    def begin_autostart(self):
-        if self.enabled:
-            self.auto_task = asyncio.create_task(self._autostart())
-
-    async def _autostart(self):
-        try:
-            if not self.initial_robot.get('robot_id') and not self.plans.read()['selected_robot']:
-                return  # First installation opens only the configuration page.
-            self.phase = 'waiting'
-            for _ in range(150):
-                ros = self.runtime.ros.status()
-                if ros.get('state') == 'running' and ros.get('graph_age', 100) <= 5:
-                    break
-                await asyncio.sleep(.1)
-            self.phase = 'stopped'
-            await self.start(**self.initial_robot)
-        except asyncio.CancelledError:
-            if self.phase == 'waiting':
-                self.phase = 'stopped'
-            raise
-        except Exception as error:
-            self.phase, self.error = 'failed', getattr(error, 'text', str(error))
+        return {**self.plans.read(), 'runtime': self.status(),
+                'defaults': {**self.initial_robot, 'bringup': self.bringup}}
 
     async def start(self, robot_id=None, revision=None, start_teleop=None, start_cameras=None):
         async with self.lock:
@@ -95,10 +72,14 @@ class RobotLauncher:
                 raise web.HTTPConflict(text='机器人正在启动或运行，不会重复启动')
             self.runtime.require_robot_stopped()
             plans = self.plans.read()
-            robot_id = robot_id if robot_id is not None else plans['selected_robot']
+            robot_id = robot_id if robot_id is not None else (
+                self.initial_robot.get('robot_id') or plans['selected_robot'])
             if not robot_id:
                 raise web.HTTPBadRequest(text='请在左侧选择机器人配置，然后点击“开启机器人”')
             plan = dict(plans['profiles'].get(robot_id, default_plan(robot_id)))
+            for key in ('start_teleop', 'start_cameras'):
+                if key in self.initial_robot:
+                    plan[key] = self.initial_robot[key]
             for key, value in (('start_teleop', start_teleop), ('start_cameras', start_cameras)):
                 if value is not None:
                     plan[key] = value
@@ -106,6 +87,14 @@ class RobotLauncher:
                 plan['bringup'] = self.bringup
             plan = validate_plan(plan)
             robot = await self.client.call('get', robot_id=plan['robot_id'])
+            if self.bringup is None:
+                # The saved robot owns its driver setup. Do not also launch an
+                # old command-line integration for the same vendor launch.
+                configured = robot['saved'].get('plugin_settings', {}).get('driver', {}).get('startup', [])
+                vendor = plan['bringup']
+                if any(step.get('kind') == 'launch' and step.get('package') == vendor['package']
+                       and step.get('launch_file') == vendor['launch_file'] for step in configured):
+                    plan['bringup'] = default_plan()['bringup']
             if robot['diff'] or (revision is not None and revision != robot['latest']):
                 raise web.HTTPConflict(text='配置有未保存修改或已被其他窗口更新，请先保存并刷新配置')
             if plan['start_teleop'] and 'hc_teleop_config' not in robot['saved']['resources']:
@@ -220,10 +209,6 @@ class RobotLauncher:
             self.log_stream = None
 
     async def stop(self):
-        if self.auto_task and self.auto_task is not asyncio.current_task():
-            self.auto_task.cancel()
-            await asyncio.gather(self.auto_task, return_exceptions=True)
-            self.auto_task = None
         if self.monitor:
             self.monitor.cancel()
             await asyncio.gather(self.monitor, return_exceptions=True)

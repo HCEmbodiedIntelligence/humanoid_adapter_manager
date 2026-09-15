@@ -136,6 +136,7 @@ class WebCreationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 201, await response.text())
         runtime = self.client.server.app['runtime']
         runtime.launcher.enabled = True
+        runtime.launcher.initial_robot = {'start_teleop': False, 'start_cameras': False}
         runtime.require_robot_stopped = Mock()
         real_spawn = asyncio.create_subprocess_exec
         async def safe_spawn(*command, **kwargs):

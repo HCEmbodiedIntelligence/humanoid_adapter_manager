@@ -92,7 +92,7 @@ def test_port_bind_failure_never_autostarts_hardware(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, 'argv', [str(path), '--run-robot', '--offline', '--robot-id', 'mock_arm',
         '--state-root', str(tmp_path / 'state'), '--plugin-root', str(tmp_path / 'plugins')])
     begin = Mock()
-    monkeypatch.setattr(RobotLauncher, 'begin_autostart', begin)
+    monkeypatch.setattr(RobotLauncher, 'start', begin)
     async def occupied(_site):
         raise OSError('test port already in use')
     monkeypatch.setattr(web.TCPSite, 'start', occupied)
@@ -187,21 +187,56 @@ class RobotLauncherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get('/api/launcher/log')).status, 200)
 
     async def test_fresh_install_and_readonly_web_do_not_start_robot(self):
-        self.launcher.begin_autostart()
-        await self.launcher.auto_task
+        await self.client.get('/api/launcher')
         self.spawn.assert_not_called()
         self.launcher.enabled = False
         await self.post('start', {'robot_id': 'mock_arm'}, expected=409)
         self.spawn.assert_not_called()
 
-    async def test_autostart_reuses_last_explicit_robot_and_options(self):
+    async def test_saved_robot_and_cli_preferences_wait_for_explicit_start(self):
         plan = default_plan('mock_arm')
         plan['start_cameras'] = False
         self.launcher.plans.save(plan, 'initial')
-        self.launcher.begin_autostart()
-        await self.launcher.auto_task
+        self.launcher.initial_robot = {'robot_id': 'mock_arm', 'start_teleop': False}
+        state = await (await self.client.get('/api/launcher')).json()
+        self.assertEqual(state['runtime']['phase'], 'stopped')
+        self.spawn.assert_not_called()
+        self.adapter.call.assert_not_called()
+        await self.post('start', {})
         self.assertEqual(self.launcher.robot_id, 'mock_arm')
         self.assertIn('start_cameras:=false', self.command)
+
+    async def test_short_entry_preserves_saved_vendor_arguments(self):
+        plan = default_plan('mock_arm')
+        plan['bringup'] = {'package': 'vendor', 'launch_file': 'robot.launch.py',
+                           'arguments': {'controllers_file': 'split.yaml', 'left_can_interface': 'can0'}}
+        self.launcher.plans.save(plan, 'initial')
+        with patch('humanoid_manager.web.robot_launcher.bringup_command', return_value=['ros2', 'launch', 'vendor']):
+            await self.post('start', {'robot_id': 'mock_arm'})
+        encoded = next(item.split(':=', 1)[1] for item in self.command if item.startswith('bringup_json:='))
+        self.assertEqual(json.loads(encoded), plan['bringup'])
+
+    async def test_cli_options_are_visible_before_click_and_used_on_start(self):
+        self.launcher.initial_robot = {'start_cameras': False, 'start_teleop': False}
+        state = await (await self.client.get('/api/launcher')).json()
+        self.assertFalse(state['defaults']['start_cameras'])
+        self.spawn.assert_not_called()
+        await self.post('start', {'robot_id': 'mock_arm'})
+        self.assertIn('start_cameras:=false', self.command)
+        self.assertIn('start_teleop:=false', self.command)
+
+    async def test_robot_driver_configuration_supersedes_duplicate_legacy_launch(self):
+        plan = default_plan('mock_arm')
+        plan['bringup'] = {'package': 'vendor', 'launch_file': 'robot.launch.py', 'arguments': {}}
+        self.launcher.plans.save(plan, 'initial')
+        self.robot['saved']['plugin_settings'] = {'driver': {'startup': [{
+            'kind': 'launch', 'package': 'vendor', 'launch_file': 'robot.launch.py',
+            'arguments': {'controllers_file': 'saved_split.yaml'}}]}}
+        await self.post('start', {'robot_id': 'mock_arm'})
+        encoded = next(item.split(':=', 1)[1] for item in self.command if item.startswith('bringup_json:='))
+        self.assertEqual(json.loads(encoded), default_plan()['bringup'])
+        self.assertEqual(self.robot['saved']['plugin_settings']['driver']['startup'][0]['arguments'],
+                         {'controllers_file': 'saved_split.yaml'})
 
     async def test_log_creation_failure_is_recoverable(self):
         (self.root / 'runtime_logs').write_text('not a directory')

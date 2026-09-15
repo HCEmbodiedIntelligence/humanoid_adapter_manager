@@ -8,15 +8,14 @@ from typing import List
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from humanoid_manager.runtime_state import acquire_deployment_lock, acquire_robot_run_lock, configuration_identity
-from humanoid_manager.startup import bringup_command, default_plan
+from humanoid_manager.startup import bringup_command, default_plan, vendor_launch_actions
 from humanoid_manager.plugin_startup import startup_actions
 
 _LEASES = []
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, OpaqueFunction, Shutdown, RegisterEventHandler
-from launch.event_handlers import OnProcessExit
-from launch.launch_description_sources import PythonLaunchDescriptionSource, AnyLaunchDescriptionSource
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, Shutdown
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -148,16 +147,7 @@ def _launch_registered_robot(context):
     vendor_actions = []
     if vendor:
         # The run lease is acquired before any vendor hardware can start.
-        # Normal successful controller-spawner exits are not failures.
-        vendor_actions = [
-            RegisterEventHandler(OnProcessExit(on_exit=lambda event, _context: (
-                [Shutdown(reason=f'底层启动进程异常退出: {event.returncode}')]
-                if event.returncode else []))),
-            GroupAction(scoped=True, actions=[
-                IncludeLaunchDescription(AnyLaunchDescriptionSource(vendor[2]),
-                                         launch_arguments=plan['bringup']['arguments'].items()),
-            ]),
-        ]
+        vendor_actions = vendor_launch_actions(vendor)
 
     for instance in deployment.gripper_instances:
         actions.insert(1, Node(
