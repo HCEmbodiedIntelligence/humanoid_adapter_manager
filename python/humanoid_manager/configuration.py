@@ -364,6 +364,7 @@ def resolve_gripper_test(document, gripper_name, target):
     return {
         "command_topic": parameters["platform_gripper_command_topic"],
         "state_topic": parameters["platform_gripper_state_topic"],
+        "diagnostics_topic": parameters.get("diagnostics_topic", "/diagnostics"),
         "name": gripper_name,
         "position": position,
         "max_effort": effort,

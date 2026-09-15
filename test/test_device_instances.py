@@ -278,6 +278,44 @@ def _shared_runtime_simulation(tmp_path):
         assert any(abs(v-.03) < 1e-6 for v in observed['tool_b']), detail
         assert not any(abs(v-.03) < 1e-6 for v in observed['tool_a']), observed
         assert not any(abs(v-.01) < 1e-6 for v in observed['tool_b']), observed
+
+        # Exercise the web helper against these same real runtime/plugin
+        # processes. Good platform feedback must not hide a disconnected
+        # vendor command endpoint.
+        from concurrent.futures import ThreadPoolExecutor
+        from humanoid_manager.web.gripper_command import GripperCommandError, execute_gripper_test
+        node.destroy_subscription(subscriptions[0])
+        platform_commands = []
+        subscriptions.append(node.create_subscription(
+            JointState, '/test_tools/commands', platform_commands.append, 10))
+        command = dict(command_topic='/test_tools/commands', state_topic='/test_tools/states',
+                       name='tool_a', runtime_node='tool_a', position=.035,
+                       max_effort=5., timeout_sec=2.)
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            check = worker.submit(execute_gripper_test, command, 227)
+            deadline = time.monotonic() + 6
+            while not check.done() and time.monotonic() < deadline:
+                feedback.publish(JointState(name=['tool_a', 'tool_b'], position=[.02, .02]))
+                executor.spin_once(timeout_sec=.02)
+                time.sleep(.02)
+            with pytest.raises(GripperCommandError, match='底层命令话题没有匹配订阅者.*未发送测试命令'):
+                check.result(timeout=1)
+        assert platform_commands == []
+
+        # The other runtime remains usable; forward its received target back
+        # as synthetic measured feedback to verify the complete ROS path.
+        observed['tool_b'].clear()
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            check = worker.submit(execute_gripper_test, dict(command, name='tool_b', runtime_node='tool_b'), 227)
+            deadline = time.monotonic() + 6
+            while not check.done() and time.monotonic() < deadline:
+                measured_b = observed['tool_b'][-1] if observed['tool_b'] else .02
+                feedback.publish(JointState(name=['tool_a', 'tool_b'], position=[.02, measured_b]))
+                executor.spin_once(timeout_sec=.02)
+                time.sleep(.02)
+            result = check.result(timeout=1)
+        assert result['final_position'] == pytest.approx(.035)
+        assert any(abs(value-.035) < 1e-6 for value in observed['tool_b'])
     finally:
         for process in processes:
             if process.poll() is None:

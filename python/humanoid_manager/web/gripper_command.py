@@ -14,11 +14,16 @@ def execute_gripper_test(command, domain_id):
     """Publish a bounded target while observing fresh measured gripper feedback."""
     required = {"command_topic", "state_topic", "name", "position", "max_effort", "timeout_sec"}
     if (not isinstance(command, dict) or not required <= command.keys()
-            or command.keys() - required - {'runtime_node'}):
+            or command.keys() - required - {'runtime_node', 'diagnostics_topic'}):
         raise GripperCommandError("夹爪测试命令不完整")
     if not all(isinstance(command[key], str) and command[key] for key in
                ("command_topic", "state_topic", "name")):
         raise GripperCommandError("夹爪测试话题和名称不能为空")
+    runtime_node = command.get('runtime_node', 'humanoid_gripper_runtime')
+    diagnostics_topic = command.get('diagnostics_topic', '/diagnostics')
+    if not all(isinstance(value, str) and value.strip('/') for value in
+               (runtime_node, diagnostics_topic)):
+        raise GripperCommandError("夹爪诊断话题和运行时名称不能为空")
     try:
         position = float(command["position"])
         effort = float(command["max_effort"])
@@ -35,13 +40,15 @@ def execute_gripper_test(command, domain_id):
         from rclpy.context import Context
         from rclpy.executors import SingleThreadedExecutor
         from rclpy.qos import qos_profile_sensor_data
+        from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
         from sensor_msgs.msg import JointState
     except ImportError as error:
         raise GripperCommandError("当前环境缺少 ROS 2 JointState 支持，无法测试夹爪") from error
 
     context, node, executor = Context(), None, None
-    publisher = subscription = None
+    publisher = subscription = diagnostic_subscription = None
     feedback = {"position": None, "count": 0}
+    health = {"status": None, "received_at": 0.0}
     published = 0
     started = time.monotonic()
     try:
@@ -61,16 +68,47 @@ def execute_gripper_test(command, domain_id):
             feedback["position"] = float(message.position[index])
             feedback["count"] += 1
 
+        def receive_diagnostics(message):
+            for status in message.status:
+                if status.name.lstrip('/') == runtime_node.lstrip('/') + ': driver':
+                    health.update(status=status, received_at=time.monotonic())
+
+        def diagnostic_error():
+            status = health['status']
+            if status is None or time.monotonic() - health['received_at'] > 4.0:
+                return f"未收到 {runtime_node} 的新鲜驱动诊断（{diagnostics_topic}）"
+            values = {item.key: item.value for item in status.values}
+            if values.get('driver_fault_latched') == 'true':
+                reason = values.get('last_stop_reason') or status.message
+                return f"夹爪运行时已锁定驱动故障：{reason}"
+            # A platform subscriber and valid joint feedback do not prove that
+            # the vendor controller accepts this plugin's command interface.
+            if values.get(command['name'] + '.command_subscribers') == '0':
+                return (f"夹爪 {command['name']} 的底层命令话题没有匹配订阅者；"
+                        "请核对夹爪插件与底层控制器的接口")
+            if (status.level >= DiagnosticStatus.ERROR
+                    or any(values.get(key) == 'false' for key in
+                           ('connected', 'active', 'communication_ok'))
+                    or values.get(command['name'] + '.feedback_fresh') == 'false'):
+                return f"夹爪驱动尚未就绪：{status.message}"
+            return None
+
         publisher = node.create_publisher(JointState, command["command_topic"], 10)
         subscription = node.create_subscription(
             JointState, command["state_topic"], receive, qos_profile_sensor_data
         )
+        diagnostic_subscription = node.create_subscription(
+            DiagnosticArray, diagnostics_topic, receive_diagnostics, qos_profile_sensor_data
+        )
         ready_deadline = time.monotonic() + 3.0
-        while (publisher.get_subscription_count() == 0 or feedback["position"] is None):
+        while (publisher.get_subscription_count() == 0 or feedback["position"] is None
+               or diagnostic_error() is not None):
             remaining = ready_deadline - time.monotonic()
             if remaining <= 0:
                 if publisher.get_subscription_count() == 0:
                     raise GripperCommandError("夹爪运行时未订阅测试命令话题")
+                if diagnostic_error() is not None:
+                    raise GripperCommandError(diagnostic_error() + "；未发送测试命令")
                 raise GripperCommandError("夹爪没有返回新鲜位置反馈，未发送测试命令")
             executor.spin_once(timeout_sec=min(0.05, remaining))
 
@@ -78,9 +116,14 @@ def execute_gripper_test(command, domain_id):
         tolerance = 0.001
         deadline = time.monotonic() + timeout
         while abs(feedback["position"] - position) > tolerance:
+            error = diagnostic_error()
+            if error is not None:
+                raise GripperCommandError(error)
             if time.monotonic() >= deadline:
                 raise GripperCommandError(
-                    f"夹爪在 {timeout:g} 秒内未到达目标；已发送实测位置保持命令"
+                    f"夹爪在 {timeout:g} 秒内未到达目标"
+                    f"（目标 {position:g}，实测 {feedback['position']:g}）；"
+                    "已尝试请求保持实测位置"
                 )
             message = JointState()
             message.header.stamp = node.get_clock().now().to_msg()
@@ -126,6 +169,8 @@ def execute_gripper_test(command, domain_id):
         if node is not None:
             if subscription is not None:
                 node.destroy_subscription(subscription)
+            if diagnostic_subscription is not None:
+                node.destroy_subscription(diagnostic_subscription)
             if publisher is not None:
                 node.destroy_publisher(publisher)
             node.destroy_node()

@@ -5,9 +5,10 @@ from types import SimpleNamespace
 import pytest
 pytest.importorskip('rclpy')
 from sensor_msgs.msg import Image, JointState
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.qos_event import UnsupportedEventTypeError
-from humanoid_manager.web.gripper_command import execute_gripper_test
+from humanoid_manager.web.gripper_command import GripperCommandError, execute_gripper_test
 from humanoid_manager.web.camera_snapshot import CameraSnapshotError, capture_camera_snapshot
 
 
@@ -23,6 +24,7 @@ def ros(monkeypatch):
     import rclpy.context
     import rclpy.executors
     state = SimpleNamespace(callback=None, messages=[], feedback=None, destroyed=False, executor_shutdown=False,
+                            diagnostic_callback=None, diagnostics=None, diagnostic_topic=None,
                             subscription_topic=None, publisher_topic=None, subscriptions=[],
                             endpoints=[SimpleNamespace(topic_type='sensor_msgs/msg/Image',
                                 qos_profile=QoSProfile(depth=10))], lost_messages=0,
@@ -39,6 +41,9 @@ def ros(monkeypatch):
             state.publisher_topic = topic
             return Publisher()
         def create_subscription(self, kind, topic, callback, qos, *, event_callbacks=None):
+            if kind is DiagnosticArray:
+                state.diagnostic_callback, state.diagnostic_topic = callback, topic
+                return object()
             state.subscription_attempts += 1
             if event_callbacks and not state.events_supported:
                 raise UnsupportedEventTypeError('message lost events unavailable')
@@ -59,6 +64,8 @@ def ros(monkeypatch):
         def remove_node(self, node): pass
         def shutdown(self): state.executor_shutdown = True
         def spin_once(self, **kwargs):
+            if state.diagnostic_callback and state.diagnostics:
+                state.diagnostic_callback(state.diagnostics())
             if state.lost_messages and state.event_callbacks:
                 state.event_callbacks.message_lost(SimpleNamespace(total_count_change=state.lost_messages))
                 state.lost_messages = 0
@@ -73,11 +80,21 @@ def ros(monkeypatch):
     return state
 
 
+def gripper_diagnostics(runtime='humanoid_gripper_runtime_vendor_b', **values):
+    fields = {'connected': 'true', 'active': 'true', 'communication_ok': 'true',
+              'driver_fault_latched': 'false', **values}
+    return DiagnosticArray(status=[DiagnosticStatus(name=f'/{runtime}: driver',
+        values=[KeyValue(key=key, value=value) for key, value in fields.items()])])
+
+
 @pytest.mark.parametrize('position', [.07, .01])
 def test_open_and_close_accept_instance_routing_and_observe_measured_result(ros, position):
     command = {'name': 'tool_b', 'position': position, 'max_effort': 5., 'timeout_sec': .2,
                'command_topic': '/tools/command', 'state_topic': '/tools/state',
-               'runtime_node': 'humanoid_gripper_runtime_vendor_b'}
+               'runtime_node': 'humanoid_gripper_runtime_vendor_b',
+               'diagnostics_topic': '/tools/diagnostics'}
+    # Direct SDK plugins need not expose topic-subscriber counts.
+    ros.diagnostics = gripper_diagnostics
     ros.feedback = lambda: JointState(name=['tool_a', 'tool_b'],
         position=[.99, ros.messages[-1].position[0] if ros.messages else .04])
     result = execute_gripper_test(command, 0)
@@ -87,6 +104,42 @@ def test_open_and_close_accept_instance_routing_and_observe_measured_result(ros,
     assert all(message.name == ['tool_b'] for message in ros.messages)
     assert list(ros.messages[-1].position) == [position]
     assert ros.destroyed
+    assert ros.diagnostic_topic == '/tools/diagnostics'
+
+
+@pytest.mark.parametrize('diagnostics,error', [
+    (lambda: gripper_diagnostics(**{'tool_b.command_subscribers': '0',
+                                   'tool_b.feedback_fresh': 'true'}), '底层命令话题没有匹配订阅者'),
+    (lambda: gripper_diagnostics('humanoid_gripper_runtime_other'), '未收到.*新鲜驱动诊断'),
+    (lambda: gripper_diagnostics(driver_fault_latched='true',
+                                last_stop_reason='vendor rejected command'), '已锁定驱动故障.*vendor rejected'),
+])
+def test_feedback_and_platform_subscriber_do_not_bypass_driver_health(ros, monkeypatch, diagnostics, error):
+    from humanoid_manager.web import gripper_command
+    ticks = iter(i * .05 for i in range(1000))
+    monkeypatch.setattr(gripper_command, 'time', SimpleNamespace(monotonic=lambda: next(ticks)))
+    ros.feedback = lambda: JointState(name=['tool_b'], position=[.04])
+    ros.diagnostics = diagnostics
+    command = {'name': 'tool_b', 'position': .01, 'max_effort': 5., 'timeout_sec': 2.,
+               'command_topic': '/tools/command', 'state_topic': '/tools/state',
+               'runtime_node': 'humanoid_gripper_runtime_vendor_b'}
+    with pytest.raises(GripperCommandError, match=error + '.*未发送测试命令'):
+        execute_gripper_test(command, 14)
+    assert ros.messages == []
+    assert ros.destroyed and ros.executor_shutdown
+
+
+def test_loss_of_vendor_command_subscriber_stops_test_targets(ros):
+    ros.feedback = lambda: JointState(name=['tool_b'], position=[.04])
+    ros.diagnostics = lambda: gripper_diagnostics(**{
+        'tool_b.command_subscribers': '0' if ros.messages else '1'})
+    command = {'name': 'tool_b', 'position': .01, 'max_effort': 5., 'timeout_sec': 2.,
+               'command_topic': '/tools/command', 'state_topic': '/tools/state',
+               'runtime_node': 'humanoid_gripper_runtime_vendor_b'}
+    with pytest.raises(GripperCommandError, match='底层命令话题没有匹配订阅者'):
+        execute_gripper_test(command, 14)
+    assert [message.position[0] for message in ros.messages] == [.01, .04, .04, .04]
+    assert ros.destroyed and ros.executor_shutdown
 
 
 @pytest.mark.parametrize('reliability', [ReliabilityPolicy.RELIABLE, ReliabilityPolicy.BEST_EFFORT])

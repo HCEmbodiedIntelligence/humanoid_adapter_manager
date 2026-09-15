@@ -269,6 +269,8 @@ def test_gripper_test_uses_managed_topics_and_configured_open_close_positions(ma
     document['resources']['gripper_params'] = copy.deepcopy(
         manager.catalog()['gripper_drivers']['fake_gripper']['template']
     )
+    document['resources']['gripper_params']['humanoid_gripper_runtime']['ros__parameters'][
+        'diagnostics_topic'] = '/tools/diagnostics'
     document['resources']['hc_teleop_config'] = {'grippers': [{
         'id': 'left', 'joint_name': 'left_gripper', 'open_position': 0.04,
         'closed_position': 0.002, 'max_effort': 12.0, 'max_speed': 0.02,
@@ -277,6 +279,7 @@ def test_gripper_test_uses_managed_topics_and_configured_open_close_positions(ma
     closed = resolve_gripper_test(document, 'left_gripper', 'close')
     assert opened['command_topic'] == '/hc_teleop/gripper_commands'
     assert opened['state_topic'] == '/hc_teleop/gripper_states'
+    assert opened['diagnostics_topic'] == '/tools/diagnostics'
     assert opened['position'] == 0.04 and closed['position'] == 0.002
     assert opened['max_effort'] == 12.0
 
